@@ -1,0 +1,5 @@
+*.exe
+*.exe~
+logs/
+config.yaml
+history.json

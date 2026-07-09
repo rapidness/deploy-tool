@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>服务更新工具</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>服务更新工具</h1>
+    <button class="btn-link" id="btn-logout">退出登录</button>
+  </header>
+
+  <section class="card">
+    <h2>服务状态</h2>
+    <div id="services"><p class="muted">加载中...</p></div>
+  </section>
+
+  <section class="card">
+    <h2>部署配置</h2>
+    <label>选择服务
+      <select id="service-select" required>
+        <option value="">请选择服务</option>
+      </select>
+    </label>
+    <div id="targets-section" style="display:none">
+      <div class="targets-header">
+        <h3>目标路径</h3>
+        <button type="button" class="btn-sm" id="btn-add-target">添加路径</button>
+        <button type="button" class="btn-sm" id="btn-save-targets">保存路径</button>
+      </div>
+      <p class="muted">每个目标路径对应一个部署目录（相对根目录），右侧上传文件。非 zip 文件直接覆盖到该目录；zip 文件解压到该目录。</p>
+      <div id="targets-list"></div>
+      <div id="targets-status"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>操作历史</h2>
+    <div id="history"><p class="muted">加载中...</p></div>
+  </section>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

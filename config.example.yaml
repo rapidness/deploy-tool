@@ -1,0 +1,22 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+auth:
+  username: "admin"
+  # 使用 `app.exe -hash-password yourpassword` 生成哈希后填入
+  password: "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+
+root_dir: "C:\\Services"
+
+services:
+  - name: "MyAppService"
+    display_name: "我的应用服务"
+  - name: "AnotherService"
+    display_name: "另一个服务"
+
+log:
+  path: "logs"
+  max_size_mb: 10
+  max_backups: 5
+  max_age_days: 30
