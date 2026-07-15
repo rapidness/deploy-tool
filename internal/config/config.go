@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,6 +15,7 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Auth     AuthConfig     `yaml:"auth"`
 	RootDir  string         `yaml:"root_dir"`
+	BasePath string         `yaml:"base_path"` // URL 前缀，如 /update-module
 	Services []ServiceEntry `yaml:"services"`
 	Log      LogConfig      `yaml:"log"`
 }
@@ -83,6 +85,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("root_dir 不是目录: %s", abs)
 	}
 	c.RootDir = abs
+	// 规范化 BasePath：确保以 / 开头，去除尾部 /
+	bp := strings.TrimRight(c.BasePath, "/")
+	if bp != "" && !strings.HasPrefix(bp, "/") {
+		bp = "/" + bp
+	}
+	c.BasePath = bp
 	if len(c.Services) == 0 {
 		return fmt.Errorf("services 不能为空")
 	}

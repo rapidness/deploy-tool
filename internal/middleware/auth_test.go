@@ -17,7 +17,7 @@ func TestHashAndVerifyPassword(t *testing.T) {
 }
 
 func TestLoginSuccess(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"))
+	a := NewAuth("admin", HashPassword("pw"), "")
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	r.PostForm = map[string][]string{
@@ -34,7 +34,7 @@ func TestLoginSuccess(t *testing.T) {
 }
 
 func TestLoginWrongPassword(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"))
+	a := NewAuth("admin", HashPassword("pw"), "")
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	r.PostForm = map[string][]string{
@@ -50,7 +50,7 @@ func TestLoginWrongPassword(t *testing.T) {
 }
 
 func TestRequireAuthRedirect(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"))
+	a := NewAuth("admin", HashPassword("pw"), "")
 	called := false
 	h := a.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -67,7 +67,7 @@ func TestRequireAuthRedirect(t *testing.T) {
 }
 
 func TestRequireAuthWithCookie(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"))
+	a := NewAuth("admin", HashPassword("pw"), "")
 	called := false
 	h := a.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -82,7 +82,7 @@ func TestRequireAuthWithCookie(t *testing.T) {
 }
 
 func TestRequireAuthAPIUnauthorized(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"))
+	a := NewAuth("admin", HashPassword("pw"), "")
 	h := a.RequireAuth(func(w http.ResponseWriter, r *http.Request) {})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/services", nil)

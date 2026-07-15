@@ -1,17 +1,18 @@
 // app.js 服务更新工具前端逻辑（原生 JS，无外部依赖）
 
+var BASE = window.__BP__ || '';
 var currentService = '';
 var currentTargets = []; // [{path, desc}]
 var targetUploads = {};  // path -> {uploadID, files}
 
 // 退出登录
 document.getElementById('btn-logout').addEventListener('click', function() {
-  fetch('/logout', { method: 'POST' }).then(function() { window.location.href = '/login'; });
+  fetch(BASE + '/logout', { method: 'POST' }).then(function() { window.location.href = BASE + '/login'; });
 });
 
 // 加载服务列表并填充下拉框与状态表格
 function loadServices() {
-  fetch('/api/services')
+  fetch(BASE + '/api/services')
     .then(function(r) { return r.json(); })
     .then(function(services) {
       var html = '<table><thead><tr><th>服务名称</th><th>显示名</th><th>状态</th><th>操作</th></tr></thead><tbody>';
@@ -58,7 +59,7 @@ function controlService(name, action) {
   var form = new FormData();
   form.append('service', name);
   form.append('action', action);
-  fetch('/api/service/control', { method: 'POST', body: form })
+  fetch(BASE + '/api/service/control', { method: 'POST', body: form })
     .then(function(r) { return r.json(); })
     .then(function(res) {
       if (res.error) { alert('操作失败: ' + res.error); }
@@ -81,7 +82,7 @@ document.getElementById('service-select').addEventListener('change', function() 
 });
 
 function loadTargets() {
-  fetch('/api/targets?service=' + encodeURIComponent(currentService))
+  fetch(BASE + '/api/targets?service=' + encodeURIComponent(currentService))
     .then(function(r) { return r.json(); })
     .then(function(list) {
       currentTargets = list || [];
@@ -157,7 +158,7 @@ document.getElementById('btn-save-targets').addEventListener('click', function()
     var desc = descInputs[i] ? descInputs[i].value.trim() : '';
     if (path) { targets.push({ path: path, desc: desc }); }
   });
-  fetch('/api/targets', {
+  fetch(BASE + '/api/targets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ service: currentService, targets: targets })
@@ -210,7 +211,7 @@ function uploadFiles(zone, files) {
   for (var i = 0; i < files.length; i++) {
     form.append('files', files[i], files[i].name);
   }
-  fetch('/api/upload', { method: 'POST', body: form })
+  fetch(BASE + '/api/upload', { method: 'POST', body: form })
     .then(function(r) { return r.json(); })
     .then(function(res) {
       if (res.error) {
@@ -235,7 +236,7 @@ function deployTarget(path, filesOnly) {
   var infoDiv = document.querySelector('.upload-info[data-path="' + cssSelector(path) + '"]');
   if (infoDiv) infoDiv.innerHTML += '<p class="muted">正在执行' + (filesOnly ? '替换' : '更新') + '...</p>';
 
-  fetch('/api/deploy', {
+  fetch(BASE + '/api/deploy', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ upload_id: upload.uploadID, service: currentService, target_dir: path, files_only: !!filesOnly })
@@ -262,7 +263,7 @@ function deployTarget(path, filesOnly) {
 
 // 加载操作历史
 function loadHistory() {
-  fetch('/api/history')
+  fetch(BASE + '/api/history')
     .then(function(r) { return r.json(); })
     .then(function(list) {
       if (!list || list.length === 0) {

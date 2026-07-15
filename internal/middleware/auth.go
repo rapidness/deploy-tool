@@ -25,11 +25,12 @@ func VerifyPassword(pw, hash string) bool {
 type Auth struct {
 	Username string
 	Password string // 哈希值
+	BasePath string // URL 前缀
 }
 
 // NewAuth 创建认证中间件。
-func NewAuth(username, passwordHash string) *Auth {
-	return &Auth{Username: username, Password: passwordHash}
+func NewAuth(username, passwordHash, basePath string) *Auth {
+	return &Auth{Username: username, Password: passwordHash, BasePath: basePath}
 }
 
 const sessionCookie = "update_app_session"
@@ -73,11 +74,11 @@ func (a *Auth) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookie)
 		if err != nil || cookie.Value == "" {
-			if wantsJSON(r) {
+			if wantsJSON(r, a.BasePath) {
 				http.Error(w, "未登录", http.StatusUnauthorized)
 				return
 			}
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			http.Redirect(w, r, a.BasePath+"/login", http.StatusSeeOther)
 			return
 		}
 		next(w, r)
@@ -88,8 +89,8 @@ func (a *Auth) sessionToken() string {
 	return HashPassword(a.Username + a.Password)
 }
 
-func wantsJSON(r *http.Request) bool {
+func wantsJSON(r *http.Request, basePath string) bool {
 	accept := r.Header.Get("Accept")
 	return strings.Contains(accept, "application/json") ||
-		strings.HasPrefix(r.URL.Path, "/api/")
+		strings.HasPrefix(r.URL.Path, basePath+"/api/")
 }

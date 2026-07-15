@@ -45,7 +45,7 @@ func main() {
 		log.Fatalf("初始化目标路径存储失败: %v", err)
 	}
 
-	auth := middleware.NewAuth(cfg.Auth.Username, cfg.Auth.Password)
+	auth := middleware.NewAuth(cfg.Auth.Username, cfg.Auth.Password, cfg.BasePath)
 	h := handler.New(cfg, st, auth, ts)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)

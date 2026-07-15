@@ -9,6 +9,9 @@ auth:
 
 root_dir: "C:\\Services"
 
+# URL 前缀，用于反向代理子路径部署，如 "/update-module"；留空则部署在根路径
+base_path: ""
+
 services:
   - name: "MyAppService"
     display_name: "我的应用服务"

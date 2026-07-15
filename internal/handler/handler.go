@@ -51,30 +51,31 @@ func New(cfg *config.Config, st *store.Store, auth *middleware.Auth, ts *targets
 // Routes 注册所有路由。
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
+	bp := h.cfg.BasePath
 
 	staticFS, err := fs.Sub(web.Static, "static")
 	if err != nil {
 		panic(fmt.Sprintf("嵌入静态资源子目录失败: %v", err))
 	}
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServerFS(staticFS)))
+	mux.Handle(bp+"/static/", http.StripPrefix(bp+"/static/", http.FileServerFS(staticFS)))
 
-	mux.HandleFunc("/login", h.login)
-	mux.HandleFunc("/logout", h.logout)
+	mux.HandleFunc(bp+"/login", h.login)
+	mux.HandleFunc(bp+"/logout", h.logout)
 
-	mux.HandleFunc("/", h.auth.RequireAuth(h.index))
+	mux.HandleFunc(bp+"/", h.auth.RequireAuth(h.index))
 
-	mux.HandleFunc("/api/services", h.auth.RequireAuth(h.services))
-	mux.HandleFunc("/api/upload", h.auth.RequireAuth(h.upload))
-	mux.HandleFunc("/api/deploy", h.auth.RequireAuth(h.deploy))
-	mux.HandleFunc("/api/history", h.auth.RequireAuth(h.history))
-	mux.HandleFunc("/api/service/control", h.auth.RequireAuth(h.control))
-	mux.HandleFunc("/api/targets", h.auth.RequireAuth(h.handleTargets))
+	mux.HandleFunc(bp+"/api/services", h.auth.RequireAuth(h.services))
+	mux.HandleFunc(bp+"/api/upload", h.auth.RequireAuth(h.upload))
+	mux.HandleFunc(bp+"/api/deploy", h.auth.RequireAuth(h.deploy))
+	mux.HandleFunc(bp+"/api/history", h.auth.RequireAuth(h.history))
+	mux.HandleFunc(bp+"/api/service/control", h.auth.RequireAuth(h.control))
+	mux.HandleFunc(bp+"/api/targets", h.auth.RequireAuth(h.handleTargets))
 
 	return mux
 }
 
 func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != h.cfg.BasePath+"/" {
 		http.NotFound(w, r)
 		return
 	}
@@ -83,25 +84,29 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "内部错误", http.StatusInternalServerError)
 		return
 	}
+	// 注入 base_path
+	html := strings.Replace(string(data), "__BASE_PATH__", h.cfg.BasePath, -1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(data)
+	w.Write([]byte(html))
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		data, _ := web.Static.ReadFile("static/login.html")
+		// 注入 base_path
+		html := strings.Replace(string(data), "__BASE_PATH__", h.cfg.BasePath, -1)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(data)
+		w.Write([]byte(html))
 		return
 	}
 	if h.auth.Login(w, r) {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, h.cfg.BasePath+"/", http.StatusSeeOther)
 	}
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	h.auth.Logout(w, r)
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	http.Redirect(w, r, h.cfg.BasePath+"/login", http.StatusSeeOther)
 }
 
 // servicesResp 服务状态响应。
