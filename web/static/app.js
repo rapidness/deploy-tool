@@ -131,7 +131,10 @@ function renderTargets() {
 function chooseFile(btn) {
   var input = btn.parentElement.querySelector('input[type=file]');
   input.onchange = function() {
-    if (input.files.length > 0) { uploadFiles(input, input.files); }
+    if (input.files.length > 0) {
+      var zone = btn.closest('.drop-zone') || input.closest('.drop-zone');
+      uploadFiles(zone, input.files);
+    }
   };
   input.click();
 }

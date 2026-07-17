@@ -57,12 +57,29 @@ func (m *Manager) Start() error {
 	return nil
 }
 
-// Stop 停止服务。
+// Stop 停止服务并等待其完全停止（默认超时 30 秒）。
 func (m *Manager) Stop() error {
 	if err := exec.Command("sc", "stop", m.Name).Run(); err != nil {
 		return fmt.Errorf("停止服务失败: %w", err)
 	}
+	// 轮询等待服务真正变为 STOPPED，确保文件句柄释放
+	if err := m.waitForState(StateStopped, 30*time.Second); err != nil {
+		return fmt.Errorf("等待服务停止超时: %w", err)
+	}
 	return nil
+}
+
+// waitForState 轮询服务状态直到达到目标状态或超时。
+func (m *Manager) waitForState(target ServiceState, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		st, err := m.Status()
+		if err == nil && st == target {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("超时 (%v)，服务未达到状态 %s", timeout, target)
 }
 
 // Restart 重启服务。
@@ -207,13 +224,50 @@ func copyZipFile(f *zip.File, target string) error {
 		return err
 	}
 	defer rc.Close()
-	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
+	return writeFileWithRetry(target, func(out *os.File) error {
+		_, err := io.Copy(out, rc)
 		return err
+	})
+}
+
+// writeFileWithRetry 在遇到文件占用错误时自动重试（最多 5 次，每次间隔 1 秒）。
+// Windows 上服务停止后文件句柄释放可能有延迟。
+func writeFileWithRetry(target string, writeFn func(*os.File) error) error {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+		if err != nil {
+			lastErr = err
+			if isFileInUse(err) && attempt < 4 {
+				time.Sleep(time.Second)
+				continue
+			}
+			return err
+		}
+		err = writeFn(out)
+		out.Close()
+		if err != nil {
+			lastErr = err
+			if isFileInUse(err) && attempt < 4 {
+				time.Sleep(time.Second)
+				continue
+			}
+			return err
+		}
+		return nil
 	}
-	defer out.Close()
-	_, err = io.Copy(out, rc)
-	return err
+	return lastErr
+}
+
+// isFileInUse 判断错误是否为文件被占用（Windows）。
+func isFileInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "being used by another process") ||
+		strings.Contains(s, "The process cannot access the file") ||
+		strings.Contains(s, "used by another process")
 }
 
 // StepFunc 单个部署步骤函数，返回结果描述与错误。
@@ -261,7 +315,10 @@ func DeployFiles(items []FileItem, rootDir, targetDir string) ([]string, error) 
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return written, fmt.Errorf("创建父目录失败(%s): %w", filepath.Dir(target), err)
 		}
-		if err := os.WriteFile(target, item.Data, 0o644); err != nil {
+		if err := writeFileWithRetry(target, func(out *os.File) error {
+			_, err := out.Write(item.Data)
+			return err
+		}); err != nil {
 			return written, fmt.Errorf("写入文件失败(%s): %w", target, err)
 		}
 		written = append(written, target)
@@ -325,7 +382,10 @@ func DeployFile(data []byte, rootDir, targetRel string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return "", fmt.Errorf("创建父目录失败(%s): %w", filepath.Dir(target), err)
 	}
-	if err := os.WriteFile(target, data, 0o644); err != nil {
+	if err := writeFileWithRetry(target, func(out *os.File) error {
+		_, err := out.Write(data)
+		return err
+	}); err != nil {
 		return "", fmt.Errorf("写入文件失败(%s): %w", target, err)
 	}
 	return target, nil
