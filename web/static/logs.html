@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>日志文件 - 服务更新工具</title>
+<link rel="stylesheet" href="__BASE_PATH__/static/style.css">
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>日志文件</h1>
+    <div class="header-links">
+      <a class="btn-link" href="__BASE_PATH__/">返回首页</a>
+      <button class="btn-link" id="btn-logout">退出登录</button>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="logs-toolbar">
+      <input type="text" id="log-search" placeholder="按文件名过滤..." class="log-search-input">
+      <button type="button" class="btn-sm" id="btn-refresh-logs">刷新</button>
+    </div>
+    <div id="logs"><p class="muted">加载中...</p></div>
+  </section>
+</div>
+
+<div id="log-viewer" class="modal" style="display:none">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="log-viewer-title">日志查看</h3>
+      <div class="modal-actions">
+        <button type="button" class="btn-sm" id="btn-log-maximize">最大化</button>
+        <button type="button" class="btn-sm" id="btn-log-newtab">新页面打开</button>
+        <button type="button" class="btn-sm" id="btn-close-log-viewer">关闭</button>
+      </div>
+    </div>
+    <pre id="log-viewer-content" class="log-viewer-content"></pre>
+  </div>
+</div>
+
+<script>window.__BP__ = "__BASE_PATH__";</script>
+<script src="__BASE_PATH__/static/logs.js"></script>
+</body>
+</html>

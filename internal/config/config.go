@@ -16,6 +16,7 @@ type Config struct {
 	Auth     AuthConfig     `yaml:"auth"`
 	RootDir  string         `yaml:"root_dir"`
 	BasePath string         `yaml:"base_path"` // URL 前缀，如 /update-module
+	LogDir   string         `yaml:"log_dir"`   // 日志文件目录（供前端浏览/下载）
 	Services []ServiceEntry `yaml:"services"`
 	Log      LogConfig      `yaml:"log"`
 }
@@ -110,6 +111,21 @@ func (c *Config) Validate() error {
 	}
 	if c.Log.MaxAgeDays < 0 {
 		c.Log.MaxAgeDays = 30
+	}
+	// 校验并规范化 LogDir（日志文件浏览目录）
+	if c.LogDir != "" {
+		absLog, err := filepath.Abs(c.LogDir)
+		if err != nil {
+			return fmt.Errorf("log_dir 路径解析失败: %w", err)
+		}
+		info, err := os.Stat(absLog)
+		if err != nil {
+			return fmt.Errorf("log_dir 不存在: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("log_dir 不是目录: %s", absLog)
+		}
+		c.LogDir = absLog
 	}
 	return nil
 }

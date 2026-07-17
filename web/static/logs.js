@@ -1,0 +1,128 @@
+// logs.js 日志页面前端逻辑（原生 JS，无外部依赖）
+
+var BASE = window.__BP__ || '';
+var allLogs = [];
+
+// 退出登录
+document.getElementById('btn-logout').addEventListener('click', function() {
+  fetch(BASE + '/logout', { method: 'POST' }).then(function() { window.location.href = BASE + '/login'; });
+});
+
+document.getElementById('btn-refresh-logs').addEventListener('click', loadLogs);
+
+document.getElementById('log-search').addEventListener('input', renderLogs);
+
+loadLogs();
+setInterval(loadLogs, 15000);
+
+function loadLogs() {
+  fetch(BASE + '/api/logs')
+    .then(function(r) { return r.json(); })
+    .then(function(list) {
+      var div = document.getElementById('logs');
+      if (list && list.error) {
+        div.innerHTML = '<p class="error">' + escapeHtml(list.error) + '</p>';
+        return;
+      }
+      allLogs = list || [];
+      renderLogs();
+    })
+    .catch(function(err) {
+      document.getElementById('logs').innerHTML = '<p class="error">加载失败: ' + err.message + '</p>';
+    });
+}
+
+function renderLogs() {
+  var div = document.getElementById('logs');
+  var kw = (document.getElementById('log-search').value || '').trim().toLowerCase();
+  var list = allLogs;
+  if (kw) {
+    list = list.filter(function(f) { return (f.name || '').toLowerCase().indexOf(kw) >= 0; });
+  }
+  if (list.length === 0) {
+    div.innerHTML = '<p class="muted">' + (kw ? '无匹配文件' : '暂无日志文件') + '</p>';
+    return;
+  }
+  var html = '<table><thead><tr><th>文件名</th><th>大小</th><th>最后更新</th><th>操作</th></tr></thead><tbody>';
+  list.forEach(function(f) {
+    var t = f.mod_time ? new Date(f.mod_time).toLocaleString('zh-CN') : '';
+    html += '<tr>'
+      + '<td>' + escapeHtml(f.name) + '</td>'
+      + '<td>' + formatSize(f.size) + '</td>'
+      + '<td>' + t + '</td>'
+      + '<td>'
+      + '<button class="btn-sm" onclick="viewLog(\'' + escapeAttr(f.name) + '\')">查看</button> '
+      + '<button class="btn-sm" onclick="downloadLog(\'' + escapeAttr(f.name) + '\')">下载</button>'
+      + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  div.innerHTML = html;
+}
+
+function formatSize(bytes) {
+  if (bytes == null) return '';
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+  return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function downloadLog(name) {
+  window.location.href = BASE + '/api/logs/download?name=' + encodeURIComponent(name);
+}
+
+var currentLogName = '';
+
+function viewLog(name) {
+  currentLogName = name;
+  var viewer = document.getElementById('log-viewer');
+  var content = document.getElementById('log-viewer-content');
+  var title = document.getElementById('log-viewer-title');
+  title.textContent = '日志查看: ' + name;
+  content.textContent = '加载中...';
+  viewer.style.display = '';
+  viewer.classList.remove('maximized');
+  document.getElementById('btn-log-maximize').textContent = '最大化';
+  fetch(BASE + '/api/logs/view?name=' + encodeURIComponent(name))
+    .then(function(r) {
+      if (!r.ok) { throw new Error('HTTP ' + r.status); }
+      return r.text();
+    })
+    .then(function(text) {
+      content.textContent = text;
+    })
+    .catch(function(err) {
+      content.textContent = '加载失败: ' + err.message;
+    });
+}
+
+document.getElementById('btn-close-log-viewer').addEventListener('click', function() {
+  document.getElementById('log-viewer').style.display = 'none';
+  document.getElementById('log-viewer-content').textContent = '';
+  currentLogName = '';
+});
+
+document.getElementById('btn-log-maximize').addEventListener('click', function() {
+  var viewer = document.getElementById('log-viewer');
+  var btn = this;
+  if (viewer.classList.toggle('maximized')) {
+    btn.textContent = '还原';
+  } else {
+    btn.textContent = '最大化';
+  }
+});
+
+document.getElementById('btn-log-newtab').addEventListener('click', function() {
+  if (!currentLogName) return;
+  window.open(BASE + '/api/logs/view?name=' + encodeURIComponent(currentLogName), '_blank');
+});
+
+// 工具函数
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function escapeAttr(s) {
+  return String(s).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}

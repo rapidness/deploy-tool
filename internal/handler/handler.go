@@ -7,6 +7,9 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +66,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc(bp+"/logout", h.logout)
 
 	mux.HandleFunc(bp+"/", h.auth.RequireAuth(h.index))
+	mux.HandleFunc(bp+"/logs", h.auth.RequireAuth(h.logsPage))
 
 	mux.HandleFunc(bp+"/api/services", h.auth.RequireAuth(h.services))
 	mux.HandleFunc(bp+"/api/upload", h.auth.RequireAuth(h.upload))
@@ -70,6 +74,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc(bp+"/api/history", h.auth.RequireAuth(h.history))
 	mux.HandleFunc(bp+"/api/service/control", h.auth.RequireAuth(h.control))
 	mux.HandleFunc(bp+"/api/targets", h.auth.RequireAuth(h.handleTargets))
+
+	mux.HandleFunc(bp+"/api/logs", h.auth.RequireAuth(h.logs))
+	mux.HandleFunc(bp+"/api/logs/download", h.auth.RequireAuth(h.logDownload))
+	mux.HandleFunc(bp+"/api/logs/view", h.auth.RequireAuth(h.logView))
 
 	return mux
 }
@@ -85,6 +93,22 @@ func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 注入 base_path
+	html := strings.Replace(string(data), "__BASE_PATH__", h.cfg.BasePath, -1)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(html))
+}
+
+// logsPage 返回独立的日志文件页面。
+func (h *Handler) logsPage(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != h.cfg.BasePath+"/logs" {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := web.Static.ReadFile("static/logs.html")
+	if err != nil {
+		http.Error(w, "内部错误", http.StatusInternalServerError)
+		return
+	}
 	html := strings.Replace(string(data), "__BASE_PATH__", h.cfg.BasePath, -1)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(html))
@@ -400,6 +424,112 @@ func (h *Handler) control(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(v)
+}
+
+// logEntry 日志文件信息。
+type logEntry struct {
+	Name       string `json:"name"`        // 文件名
+	Size       int64  `json:"size"`        // 字节数
+	ModTime    string `json:"mod_time"`    // 最后更新时间 RFC3339
+	ModTimeMs  int64  `json:"mod_time_ms"` // 最后更新时间毫秒时间戳
+	IsDir      bool   `json:"is_dir"`
+}
+
+// logs 返回 log_dir 下的日志文件列表（仅文件，不递归）。
+func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.LogDir == "" {
+		writeJSON(w, map[string]any{"error": "log_dir 未配置"})
+		return
+	}
+	entries, err := os.ReadDir(h.cfg.LogDir)
+	if err != nil {
+		writeJSON(w, map[string]any{"error": "读取日志目录失败: " + err.Error()})
+		return
+	}
+	var list []logEntry
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		list = append(list, logEntry{
+			Name:      e.Name(),
+			Size:      info.Size(),
+			ModTime:   info.ModTime().Format(time.RFC3339),
+			ModTimeMs: info.ModTime().UnixMilli(),
+			IsDir:     false,
+		})
+	}
+	// 按最后更新时间倒序
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].ModTimeMs > list[j].ModTimeMs
+	})
+	writeJSON(w, list)
+}
+
+// safeLogPath 校验请求的文件名不会越界 log_dir。
+func (h *Handler) safeLogPath(name string) (string, error) {
+	if h.cfg.LogDir == "" {
+		return "", fmt.Errorf("log_dir 未配置")
+	}
+	// 拒绝路径分隔符与绝对路径，仅允许单层文件名
+	cleaned := filepath.Clean(name)
+	if cleaned != name || filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) || cleaned == "." || cleaned == ".." {
+		return "", fmt.Errorf("非法文件名: %s", name)
+	}
+	abs := filepath.Join(h.cfg.LogDir, cleaned)
+	absLogDir, err := filepath.Abs(h.cfg.LogDir)
+	if err != nil {
+		return "", err
+	}
+	absResolved, err := filepath.Abs(abs)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(absLogDir, absResolved)
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("路径越界: %s", name)
+	}
+	return absResolved, nil
+}
+
+// logDownload 下载指定日志文件。
+func (h *Handler) logDownload(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "缺少 name 参数", http.StatusBadRequest)
+		return
+	}
+	abs, err := h.safeLogPath(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+	http.ServeFile(w, r, abs)
+}
+
+// logView 在线查看指定日志文件（text/plain）。
+func (h *Handler) logView(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "缺少 name 参数", http.StatusBadRequest)
+		return
+	}
+	abs, err := h.safeLogPath(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	http.ServeFile(w, r, abs)
 }
 
 func toStoreSteps(in []service.StepResult) []store.StepResult {

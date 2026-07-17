@@ -9,6 +9,9 @@ auth:
 
 root_dir: "C:\\Services"
 
+# 可供前端浏览/下载的日志文件目录（固定路径，防止越权访问）；留空则不启用日志浏览
+log_dir: "C:\\Services\\logs"
+
 # URL 前缀，用于反向代理子路径部署，如 "/update-module"；留空则部署在根路径
 base_path: ""
 
