@@ -52,6 +52,7 @@ function renderLogs() {
       + '<td>' + t + '</td>'
       + '<td>'
       + '<button class="btn-sm" onclick="viewLog(\'' + escapeAttr(f.name) + '\')">查看</button> '
+      + '<button class="btn-sm" onclick="viewLogNewTab(\'' + escapeAttr(f.name) + '\')">新窗口查看</button> '
       + '<button class="btn-sm" onclick="downloadLog(\'' + escapeAttr(f.name) + '\')">下载</button>'
       + '</td>'
       + '</tr>';
@@ -70,6 +71,10 @@ function formatSize(bytes) {
 
 function downloadLog(name) {
   window.location.href = BASE + '/api/logs/download?name=' + encodeURIComponent(name);
+}
+
+function viewLogNewTab(name) {
+  window.open(BASE + '/api/logs/view?name=' + encodeURIComponent(name), '_blank');
 }
 
 var currentLogName = '';
