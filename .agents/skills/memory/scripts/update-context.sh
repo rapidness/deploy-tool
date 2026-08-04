@@ -57,7 +57,7 @@ fi
 
 DEPENDENCIES=""
 if [ -f "$ROOT/go.mod" ]; then
-  DEPENDENCIES=$(grep '^require' -A 100 "$ROOT/go.mod" | grep -v '^require\|^)$\|^$' | sed 's/ *\/\/.*//' | awk '{print "- " $1 " " $2}')
+  DEPENDENCIES=$(grep '^require' -A 100 "$ROOT/go.mod" | grep -v '^require\|^)$\|^$' | sed 's/ *\/\/.*//' | awk '{print "- " $1 " " $2}' || true)
 fi
 
 cat > "$CTX_FILE" << EOF

@@ -62,7 +62,7 @@ fi
 RELATIONS_FILE="$MEMORY_DIR/meta/relations.md"
 EXP_FILE="$MEMORY_DIR/long-term/experiences.md"
 if [ -f "$EXP_FILE" ]; then
-  KEYWORDS=$(echo "$TITLE" | tr ' ' '\n' | grep -v '^\|$' | head -3)
+  KEYWORDS=$(echo "$TITLE" | tr ' ' '\n' | grep -v '^\|$' | head -3 || true)
   for KW in $KEYWORDS; do
     MATCHING_EXP=$(grep "^## EXP-" "$EXP_FILE" | grep -i "$KW" | head -1 | sed 's/## \(EXP-[0-9]*\).*/\1/')
     if [ -n "$MATCHING_EXP" ]; then
