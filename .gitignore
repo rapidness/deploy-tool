@@ -3,3 +3,6 @@
 logs/
 config.yaml
 history.json
+
+# AI 记忆系统
+.memory/
