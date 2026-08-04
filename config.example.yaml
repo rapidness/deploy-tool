@@ -6,6 +6,8 @@ auth:
   username: "admin"
   # 使用 `app.exe -hash-password yourpassword` 生成哈希后填入
   password: "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918"
+  # API Token 认证（可选，为空则不启用）；用于 CI/CD 或脚本调用
+  api_token: ""
 
 root_dir: "C:\\Services"
 
@@ -26,3 +28,9 @@ log:
   max_size_mb: 10
   max_backups: 5
   max_age_days: 30
+
+# 请求限流（可选，不配置则不启用）
+rate_limit:
+  enabled: false
+  max_requests: 60    # 每分钟最大请求数
+  per_ip: true        # true=按客户端 IP 限流，false=全局共享计数

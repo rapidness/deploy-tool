@@ -28,9 +28,11 @@ type Handler struct {
 	store   *store.Store
 	auth    *middleware.Auth
 	targets *targets.Store
+	rl      *middleware.RateLimiter
 
-	mu      sync.Mutex
-	uploads map[string]uploadEntry // uploadID -> 上传内容
+	mu             sync.Mutex
+	uploads        map[string]uploadEntry // uploadID -> 上传内容
+	deployStatuses sync.Map
 }
 
 // uploadEntry 保存已上传的文件数据（多文件）。
@@ -46,9 +48,21 @@ type uploadedFile struct {
 	IsZip    bool
 }
 
+// DeployStatusEntry 异步部署状态条目。
+type DeployStatusEntry struct {
+	DeployID   string               `json:"deploy_id"`
+	Status     string               `json:"status"`
+	Steps      []service.StepResult `json:"steps"`
+	FinalState string               `json:"final_state"`
+	Service    string               `json:"service"`
+	TargetDir  string               `json:"target_dir"`
+	FileName   string               `json:"file_name"`
+	CreatedAt  time.Time            `json:"created_at"`
+}
+
 // New 创建 Handler。
-func New(cfg *config.Config, st *store.Store, auth *middleware.Auth, ts *targets.Store) *Handler {
-	return &Handler{cfg: cfg, store: st, auth: auth, targets: ts, uploads: make(map[string]uploadEntry)}
+func New(cfg *config.Config, st *store.Store, auth *middleware.Auth, ts *targets.Store, rl *middleware.RateLimiter) *Handler {
+	return &Handler{cfg: cfg, store: st, auth: auth, targets: ts, rl: rl, uploads: make(map[string]uploadEntry)}
 }
 
 // Routes 注册所有路由。
@@ -68,16 +82,26 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc(bp+"/", h.auth.RequireAuth(h.index))
 	mux.HandleFunc(bp+"/logs", h.auth.RequireAuth(h.logsPage))
 
-	mux.HandleFunc(bp+"/api/services", h.auth.RequireAuth(h.services))
-	mux.HandleFunc(bp+"/api/upload", h.auth.RequireAuth(h.upload))
-	mux.HandleFunc(bp+"/api/deploy", h.auth.RequireAuth(h.deploy))
-	mux.HandleFunc(bp+"/api/history", h.auth.RequireAuth(h.history))
-	mux.HandleFunc(bp+"/api/service/control", h.auth.RequireAuth(h.control))
-	mux.HandleFunc(bp+"/api/targets", h.auth.RequireAuth(h.handleTargets))
+	// API 路由：Token 认证 + 限流
+	apiAuth := h.auth.RequireAPIAuth
+	registerAPI := func(pattern string, handler http.HandlerFunc) {
+		if h.rl != nil {
+			handler = h.rl.Middleware(handler)
+		}
+		mux.HandleFunc(pattern, apiAuth(handler))
+	}
 
-	mux.HandleFunc(bp+"/api/logs", h.auth.RequireAuth(h.logs))
-	mux.HandleFunc(bp+"/api/logs/download", h.auth.RequireAuth(h.logDownload))
-	mux.HandleFunc(bp+"/api/logs/view", h.auth.RequireAuth(h.logView))
+	registerAPI(bp+"/api/services", h.services)
+	registerAPI(bp+"/api/upload", h.upload)
+	registerAPI(bp+"/api/deploy", h.deploy)
+	registerAPI(bp+"/api/deploy/upload", h.deployUpload)
+	registerAPI(bp+"/api/deploy/status", h.deployStatus)
+	registerAPI(bp+"/api/history", h.history)
+	registerAPI(bp+"/api/service/control", h.control)
+	registerAPI(bp+"/api/targets", h.handleTargets)
+	registerAPI(bp+"/api/logs", h.logs)
+	registerAPI(bp+"/api/logs/download", h.logDownload)
+	registerAPI(bp+"/api/logs/view", h.logView)
 
 	return mux
 }
@@ -530,6 +554,142 @@ func (h *Handler) logView(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	http.ServeFile(w, r, abs)
+}
+
+// deployUpload 异步部署接口：接收 zip + 参数，异步执行部署，立即返回 deploy_id。
+func (h *Handler) deployUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "方法不允许", http.StatusMethodNotAllowed)
+		return
+	}
+
+	maxSize := int64(500 << 20)
+	r.Body = http.MaxBytesReader(w, r.Body, maxSize)
+	if err := r.ParseMultipartForm(maxSize); err != nil {
+		writeJSON(w, map[string]any{"error": "文件过大或解析失败: " + err.Error()})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, map[string]any{"error": "未提供文件"})
+		return
+	}
+	data, err := io.ReadAll(file)
+	file.Close()
+	if err != nil {
+		writeJSON(w, map[string]any{"error": "读取文件失败"})
+		return
+	}
+
+	serviceName := r.FormValue("service")
+	targetDir := r.FormValue("target_dir")
+	filesOnly := r.FormValue("files_only") == "true"
+
+	if _, ok := h.cfg.FindService(serviceName); !ok {
+		writeJSON(w, map[string]any{"error": "未知服务: " + serviceName})
+		return
+	}
+	if targetDir == "" {
+		writeJSON(w, map[string]any{"error": "目标路径不能为空"})
+		return
+	}
+
+	isZip := strings.HasSuffix(strings.ToLower(header.Filename), ".zip")
+	if isZip {
+		if _, err := service.VerifyZip(data); err != nil {
+			writeJSON(w, map[string]any{"error": "zip 校验失败: " + err.Error()})
+			return
+		}
+	}
+
+	deployID := generateUploadID()
+	entry := &DeployStatusEntry{
+		DeployID:  deployID,
+		Status:    "pending",
+		Service:   serviceName,
+		TargetDir: targetDir,
+		FileName:  header.Filename,
+		CreatedAt: time.Now(),
+	}
+	h.deployStatuses.Store(deployID, entry)
+	h.evictOldDeploys()
+
+	uploadEntry := uploadEntry{
+		Files: []uploadedFile{{FileName: header.Filename, Data: data, IsZip: isZip}},
+	}
+
+	go func() {
+		st, ok := h.deployStatuses.Load(deployID)
+		if !ok {
+			return
+		}
+		statusEntry := st.(*DeployStatusEntry)
+		statusEntry.Status = "running"
+
+		result := h.deployMulti(serviceName, targetDir, uploadEntry, filesOnly)
+
+		statusEntry.Status = result.FinalState
+		statusEntry.Steps = result.Steps
+		statusEntry.FinalState = result.FinalState
+
+		hist := store.History{
+			Operator:   "api",
+			Service:    serviceName,
+			FileName:   header.Filename,
+			Steps:      toStoreSteps(result.Steps),
+			FinalState: result.FinalState,
+		}
+		h.store.Add(hist)
+	}()
+
+	writeJSON(w, map[string]any{"deploy_id": deployID, "status": "pending"})
+}
+
+// deployStatus 查询异步部署状态。
+func (h *Handler) deployStatus(w http.ResponseWriter, r *http.Request) {
+	deployID := r.URL.Query().Get("id")
+	if deployID == "" {
+		writeJSON(w, map[string]any{"error": "缺少 id 参数"})
+		return
+	}
+	st, ok := h.deployStatuses.Load(deployID)
+	if !ok {
+		http.Error(w, "部署记录不存在", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, st.(*DeployStatusEntry))
+}
+
+// evictOldDeploys 淘汰旧的部署记录，保留最近 100 条。
+func (h *Handler) evictOldDeploys() {
+	count := 0
+	h.deployStatuses.Range(func(key, value any) bool {
+		count++
+		return true
+	})
+	if count > 100 {
+		type kv struct {
+			key string
+			t   time.Time
+		}
+		var entries []kv
+		h.deployStatuses.Range(func(key, value any) bool {
+			e := value.(*DeployStatusEntry)
+			entries = append(entries, kv{key: key.(string), t: e.CreatedAt})
+			return true
+		})
+		for i := 0; i < len(entries); i++ {
+			for j := i + 1; j < len(entries); j++ {
+				if entries[i].t.After(entries[j].t) {
+					entries[i], entries[j] = entries[j], entries[i]
+				}
+			}
+		}
+		for i := 0; i < count-100; i++ {
+			h.deployStatuses.Delete(entries[i].key)
+		}
+	}
 }
 
 func toStoreSteps(in []service.StepResult) []store.StepResult {

@@ -154,3 +154,70 @@ services:
 		t.Errorf("expected default max_size_mb=10, got %d", cfg.Log.MaxSizeMB)
 	}
 }
+
+func TestLoadWithAPIToken(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, `
+server:
+  host: "127.0.0.1"
+  port: 9090
+auth:
+  username: "a"
+  password: "b"
+  api_token: "my-secret-token"
+root_dir: "."
+services:
+  - name: "SvcA"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.APIToken != "my-secret-token" {
+		t.Errorf("api_token mismatch: %s", cfg.Auth.APIToken)
+	}
+}
+
+func TestLoadWithRateLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, `
+server:
+  host: "127.0.0.1"
+  port: 9090
+auth:
+  username: "a"
+  password: "b"
+root_dir: "."
+services:
+  - name: "SvcA"
+rate_limit:
+  enabled: true
+  max_requests: 30
+  per_ip: false
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.RateLimit.Enabled {
+		t.Errorf("rate_limit.enabled should be true")
+	}
+	if cfg.RateLimit.MaxRequests != 30 {
+		t.Errorf("max_requests mismatch: %d", cfg.RateLimit.MaxRequests)
+	}
+	if cfg.RateLimit.PerIP {
+		t.Errorf("per_ip should be false")
+	}
+}
+
+func TestLoadRateLimitDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, validConfig)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RateLimit.Enabled {
+		t.Errorf("rate_limit should be disabled by default")
+	}
+}

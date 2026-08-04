@@ -26,11 +26,12 @@ type Auth struct {
 	Username string
 	Password string // 哈希值
 	BasePath string // URL 前缀
+	APIToken string // Bearer Token 认证
 }
 
 // NewAuth 创建认证中间件。
-func NewAuth(username, passwordHash, basePath string) *Auth {
-	return &Auth{Username: username, Password: passwordHash, BasePath: basePath}
+func NewAuth(username, passwordHash, basePath, apiToken string) *Auth {
+	return &Auth{Username: username, Password: passwordHash, BasePath: basePath, APIToken: apiToken}
 }
 
 const sessionCookie = "update_app_session"
@@ -82,6 +83,27 @@ func (a *Auth) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
+	}
+}
+
+// RequireAPIAuth 优先检查 Bearer Token，匹配则放行；否则回退到 cookie 认证。
+func (a *Auth) RequireAPIAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 1. 检查 Bearer Token
+		if a.APIToken != "" {
+			authHeader := r.Header.Get("Authorization")
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				token := strings.TrimPrefix(authHeader, "Bearer ")
+				if subtle.ConstantTimeCompare([]byte(token), []byte(a.APIToken)) == 1 {
+					next(w, r)
+					return
+				}
+				http.Error(w, "无效的 API Token", http.StatusUnauthorized)
+				return
+			}
+		}
+		// 2. 回退到 cookie 认证
+		a.RequireAuth(next)(w, r)
 	}
 }
 

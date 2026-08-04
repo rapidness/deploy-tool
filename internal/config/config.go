@@ -19,6 +19,7 @@ type Config struct {
 	LogDir   string         `yaml:"log_dir"`   // 日志文件目录（供前端浏览/下载）
 	Services []ServiceEntry `yaml:"services"`
 	Log      LogConfig      `yaml:"log"`
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
 }
 
 // ServerConfig HTTP 服务监听配置。
@@ -31,6 +32,7 @@ type ServerConfig struct {
 type AuthConfig struct {
 	Username string `yaml:"username"`
 	Password string `yaml:"password"` // 哈希后的密码
+	APIToken string `yaml:"api_token"`
 }
 
 // ServiceEntry 被管理的 Windows 服务条目。
@@ -45,6 +47,13 @@ type LogConfig struct {
 	MaxSizeMB   int    `yaml:"max_size_mb"`
 	MaxBackups  int    `yaml:"max_backups"`
 	MaxAgeDays  int    `yaml:"max_age_days"`
+}
+
+// RateLimitConfig 请求速率限制配置。
+type RateLimitConfig struct {
+	Enabled     bool `yaml:"enabled"`
+	MaxRequests int  `yaml:"max_requests"`
+	PerIP       bool `yaml:"per_ip"`
 }
 
 // Load 从指定路径加载配置文件并校验。
@@ -126,6 +135,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("log_dir 不是目录: %s", absLog)
 		}
 		c.LogDir = absLog
+	}
+	if c.RateLimit.Enabled && c.RateLimit.MaxRequests <= 0 {
+		c.RateLimit.MaxRequests = 60
 	}
 	return nil
 }

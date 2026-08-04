@@ -17,7 +17,7 @@ func TestHashAndVerifyPassword(t *testing.T) {
 }
 
 func TestLoginSuccess(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"), "")
+	a := NewAuth("admin", HashPassword("pw"), "", "")
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	r.PostForm = map[string][]string{
@@ -34,7 +34,7 @@ func TestLoginSuccess(t *testing.T) {
 }
 
 func TestLoginWrongPassword(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"), "")
+	a := NewAuth("admin", HashPassword("pw"), "", "")
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/login", nil)
 	r.PostForm = map[string][]string{
@@ -50,7 +50,7 @@ func TestLoginWrongPassword(t *testing.T) {
 }
 
 func TestRequireAuthRedirect(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"), "")
+	a := NewAuth("admin", HashPassword("pw"), "", "")
 	called := false
 	h := a.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -67,7 +67,7 @@ func TestRequireAuthRedirect(t *testing.T) {
 }
 
 func TestRequireAuthWithCookie(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"), "")
+	a := NewAuth("admin", HashPassword("pw"), "", "")
 	called := false
 	h := a.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -82,12 +82,93 @@ func TestRequireAuthWithCookie(t *testing.T) {
 }
 
 func TestRequireAuthAPIUnauthorized(t *testing.T) {
-	a := NewAuth("admin", HashPassword("pw"), "")
+	a := NewAuth("admin", HashPassword("pw"), "", "")
 	h := a.RequireAuth(func(w http.ResponseWriter, r *http.Request) {})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/api/services", nil)
 	h(w, r)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 for api, got %d", w.Code)
+	}
+}
+
+func TestRequireAPIAuthWithBearerToken(t *testing.T) {
+	a := NewAuth("admin", HashPassword("pw"), "", "my-secret-token")
+	called := false
+	h := a.RequireAPIAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/services", nil)
+	r.Header.Set("Authorization", "Bearer my-secret-token")
+	h(w, r)
+	if !called {
+		t.Errorf("should call handler with valid bearer token")
+	}
+}
+
+func TestRequireAPIAuthWithWrongToken(t *testing.T) {
+	a := NewAuth("admin", HashPassword("pw"), "", "my-secret-token")
+	called := false
+	h := a.RequireAPIAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/services", nil)
+	r.Header.Set("Authorization", "Bearer wrong-token")
+	h(w, r)
+	if called {
+		t.Errorf("should not call handler with wrong bearer token")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestRequireAPIAuthFallbackToCookie(t *testing.T) {
+	a := NewAuth("admin", HashPassword("pw"), "", "my-secret-token")
+	called := false
+	h := a.RequireAPIAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/services", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: a.sessionToken()})
+	h(w, r)
+	if !called {
+		t.Errorf("should call handler with valid cookie (fallback)")
+	}
+}
+
+func TestRequireAPIAuthNoTokenConfigured(t *testing.T) {
+	a := NewAuth("admin", HashPassword("pw"), "", "")
+	called := false
+	h := a.RequireAPIAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/services", nil)
+	r.Header.Set("Authorization", "Bearer any-token")
+	h(w, r)
+	if called {
+		t.Errorf("should not accept bearer token when api_token not configured")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestRequireAPIAuthWithCookieWhenTokenConfigured(t *testing.T) {
+	a := NewAuth("admin", HashPassword("pw"), "", "my-secret-token")
+	called := false
+	h := a.RequireAPIAuth(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	})
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/services", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: a.sessionToken()})
+	h(w, r)
+	if !called {
+		t.Errorf("cookie auth should still work when api_token is configured")
 	}
 }

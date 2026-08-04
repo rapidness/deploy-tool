@@ -45,8 +45,15 @@ func main() {
 		log.Fatalf("初始化目标路径存储失败: %v", err)
 	}
 
-	auth := middleware.NewAuth(cfg.Auth.Username, cfg.Auth.Password, cfg.BasePath)
-	h := handler.New(cfg, st, auth, ts)
+	auth := middleware.NewAuth(cfg.Auth.Username, cfg.Auth.Password, cfg.BasePath, cfg.Auth.APIToken)
+
+	var rl *middleware.RateLimiter
+	if cfg.RateLimit.Enabled {
+		rl = middleware.NewRateLimiter(cfg.RateLimit.MaxRequests, cfg.RateLimit.PerIP)
+		log.Printf("请求限流已启用: %d 次/分钟, perIP=%v", cfg.RateLimit.MaxRequests, cfg.RateLimit.PerIP)
+	}
+
+	h := handler.New(cfg, st, auth, ts, rl)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	log.Printf("服务更新工具启动，监听 http://%s", addr)

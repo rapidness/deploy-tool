@@ -90,6 +90,16 @@ func (m *Manager) Restart() error {
 	return m.Start()
 }
 
+// isZipDir 判断 zip 条目是否为目录。
+// 某些 zip 工具创建的目录条目未设置目录标志位，但名称以 / 结尾（zip 规范），
+// 因此同时检查 IsDir() 和名称后缀。
+func isZipDir(f *zip.File) bool {
+	if f.FileInfo().IsDir() {
+		return true
+	}
+	return strings.HasSuffix(f.Name, "/") || strings.HasSuffix(f.Name, `\`)
+}
+
 // VerifyZip 校验 zip 数据完整性，返回条目数量。
 func VerifyZip(data []byte) (int, error) {
 	r, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -171,7 +181,7 @@ func ExtractZipWithMapping(data []byte, rootDir string, mapping map[string]strin
 		if err != nil {
 			return written, fmt.Errorf("路径校验失败(%s → %s): %w", f.Name, rel, err)
 		}
-		if f.FileInfo().IsDir() {
+		if isZipDir(f) {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return written, fmt.Errorf("创建目录失败(%s): %w", target, err)
 			}
@@ -201,7 +211,7 @@ func ExtractZip(data []byte, rootDir string) ([]string, error) {
 		if err != nil {
 			return written, fmt.Errorf("路径校验失败(%s): %w", f.Name, err)
 		}
-		if f.FileInfo().IsDir() {
+		if isZipDir(f) {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return written, fmt.Errorf("创建目录失败(%s): %w", target, err)
 			}
@@ -340,7 +350,7 @@ func ExtractZipToDir(data []byte, rootDir, targetDir string) ([]string, error) {
 		if err != nil {
 			return written, fmt.Errorf("路径校验失败(%s): %w", rel, err)
 		}
-		if f.FileInfo().IsDir() {
+		if isZipDir(f) {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return written, fmt.Errorf("创建目录失败(%s): %w", target, err)
 			}
