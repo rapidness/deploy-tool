@@ -38,6 +38,8 @@ code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; font-siz
 .btn-danger { background: #dc2626; }
 .btn-danger:hover { background: #b91c1c; }
 .upload-info { margin-top: 0.3rem; }
+.node-item { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0 1.25rem 0.4rem 0; font-size: 0.9rem; }
+.node-item input[type=checkbox] { display: inline-block; width: auto; margin: 0; }
 
 /* 日志查看弹窗 */
 .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; }

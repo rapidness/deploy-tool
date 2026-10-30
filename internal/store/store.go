@@ -25,6 +25,7 @@ type History struct {
 	Time       time.Time    `json:"time"`
 	Operator   string       `json:"operator"`
 	Service    string       `json:"service"`
+	Node       string       `json:"node"` // 执行节点名称
 	FileName   string       `json:"file_name"`
 	Steps      []StepResult `json:"steps"`
 	FinalState string       `json:"final_state"` // success / failed

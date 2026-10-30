@@ -235,33 +235,116 @@ function deployTarget(path, filesOnly) {
   var upload = targetUploads[path];
   if (!upload || !upload.uploadID) { alert('请先上传文件'); return; }
   if (!currentService) { alert('请选择服务'); return; }
+  var chosen = selectedNodes();
+  if (nodes.length > 0 && chosen.length === 0) { alert('请至少选择一个节点'); return; }
 
   var infoDiv = document.querySelector('.upload-info[data-path="' + cssSelector(path) + '"]');
-  if (infoDiv) infoDiv.innerHTML += '<p class="muted">正在执行' + (filesOnly ? '替换' : '更新') + '...</p>';
+  if (infoDiv) infoDiv.innerHTML = '<p class="muted">正在提交' + (filesOnly ? '替换' : '更新') + '...</p>';
 
-  fetch(BASE + '/api/deploy', {
+  fetch(BASE + '/api/cluster/deploy', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ upload_id: upload.uploadID, service: currentService, target_dir: path, files_only: !!filesOnly })
+    body: JSON.stringify({
+      upload_id: upload.uploadID,
+      service: currentService,
+      target_dir: path,
+      files_only: !!filesOnly,
+      nodes: chosen
+    })
   })
     .then(function(r) { return r.json(); })
     .then(function(res) {
-      var html = '<table><thead><tr><th>步骤</th><th>状态</th><th>说明</th><th>耗时(ms)</th></tr></thead><tbody>';
-      (res.Steps || res.steps || []).forEach(function(step) {
-        var cls = 'step-' + step.status;
-        html += '<tr><td>' + escapeHtml(step.name) + '</td><td class="' + cls + '">' + step.status + '</td><td>' + escapeHtml(step.message || '') + '</td><td>' + (step.duration || 0) + '</td></tr>';
-      });
-      html += '</tbody></table>';
-      var stateClass = res.FinalState === 'success' ? 'step-success' : 'step-failed';
-      html += '<p class="' + stateClass + '">最终结果: ' + escapeHtml(res.FinalState || res.final_state || '') + '</p>';
-      if (infoDiv) infoDiv.innerHTML = html;
-      delete targetUploads[path];
-      loadServices();
-      loadHistory();
+      if (res.error) {
+        if (infoDiv) infoDiv.innerHTML = '<p class="error">提交失败: ' + escapeHtml(res.error) + '</p>';
+        return;
+      }
+      pollBatch(res.batch_id, infoDiv, path);
     })
     .catch(function(err) {
       if (infoDiv) infoDiv.innerHTML = '<p class="error">请求失败: ' + err.message + '</p>';
     });
+}
+
+// 轮询批量部署状态，完成后展示各节点结果
+function pollBatch(batchID, infoDiv, path) {
+  var timer = setInterval(function() {
+    fetch(BASE + '/api/cluster/status?id=' + encodeURIComponent(batchID))
+      .then(function(r) { return r.json(); })
+      .then(function(batch) {
+        if (batch.error) {
+          clearInterval(timer);
+          if (infoDiv) infoDiv.innerHTML = '<p class="error">查询状态失败: ' + escapeHtml(batch.error) + '</p>';
+          return;
+        }
+        if (infoDiv) infoDiv.innerHTML = renderBatchHtml(batch);
+        if (batch.status === 'success' || batch.status === 'partial' || batch.status === 'failed') {
+          clearInterval(timer);
+          delete targetUploads[path];
+          loadServices();
+          loadHistory();
+        }
+      })
+      .catch(function(err) {
+        clearInterval(timer);
+        if (infoDiv) infoDiv.innerHTML = '<p class="error">查询状态失败: ' + err.message + '</p>';
+      });
+  }, 1000);
+}
+
+function renderBatchHtml(batch) {
+  var stateText = { pending: '等待执行', running: '执行中', success: '全部成功', partial: '部分失败', failed: '全部失败' }[batch.status] || batch.status;
+  var stateCls = batch.status === 'success' ? 'step-success'
+    : (batch.status === 'running' || batch.status === 'pending' ? 'muted' : 'step-failed');
+  var html = '<p class="' + stateCls + '">批量结果: ' + escapeHtml(stateText) + '</p>';
+  (batch.nodes || []).forEach(function(n) {
+    var nodeCls = n.status === 'success' ? 'step-success' : (n.status === 'failed' ? 'step-failed' : 'muted');
+    html += '<h4>' + escapeHtml(n.name) + (n.is_self ? '（本机）' : '') + ' <span class="' + nodeCls + '">' + escapeHtml(n.status) + '</span></h4>';
+    var steps = n.steps || [];
+    if (steps.length === 0) return;
+    html += '<table><thead><tr><th>步骤</th><th>状态</th><th>说明</th><th>耗时(ms)</th></tr></thead><tbody>';
+    steps.forEach(function(step) {
+      var cls = 'step-' + step.status;
+      html += '<tr><td>' + escapeHtml(step.name) + '</td><td class="' + cls + '">' + escapeHtml(step.status) + '</td><td>' + escapeHtml(step.message || '') + '</td><td>' + (step.duration || 0) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  });
+  return html;
+}
+
+// === 目标节点 ===
+var nodes = [];
+
+function loadNodes() {
+  fetch(BASE + '/api/nodes')
+    .then(function(r) { return r.json(); })
+    .then(function(list) {
+      nodes = list || [];
+      renderNodes();
+    })
+    .catch(function(err) {
+      document.getElementById('nodes-section').style.display = '';
+      document.getElementById('nodes-list').innerHTML = '<p class="error">加载节点失败: ' + escapeHtml(err.message) + '</p>';
+    });
+}
+
+function renderNodes() {
+  // 单节点时无需展示选择项
+  document.getElementById('nodes-section').style.display = nodes.length > 1 ? '' : 'none';
+  if (nodes.length === 0) return;
+  var html = '';
+  nodes.forEach(function(n) {
+    html += '<label class="node-item"><input type="checkbox" class="node-checkbox" value="' + escapeAttr(n.name) + '" checked> '
+      + escapeHtml(n.name) + (n.is_self ? ' <span class="muted">(本机)</span>' : '') + '</label>';
+  });
+  document.getElementById('nodes-list').innerHTML = html;
+}
+
+function selectedNodes() {
+  var names = [];
+  document.querySelectorAll('.node-checkbox:checked').forEach(function(box) {
+    names.push(box.value);
+  });
+  return names;
 }
 
 // 加载操作历史
@@ -273,13 +356,13 @@ function loadHistory() {
         document.getElementById('history').innerHTML = '<p class="muted">暂无历史记录</p>';
         return;
       }
-      var html = '<table><thead><tr><th>时间</th><th>操作人</th><th>服务</th><th>文件</th><th>结果</th></tr></thead><tbody>';
+      var html = '<table><thead><tr><th>时间</th><th>操作人</th><th>服务</th><th>节点</th><th>文件</th><th>结果</th></tr></thead><tbody>';
       list.forEach(function(h) {
         var t = h.time || h.Time || '';
         t = t ? new Date(t).toLocaleString('zh-CN') : '';
         var state = h.final_state || h.FinalState || '';
         var cls = state === 'success' ? 'step-success' : 'step-failed';
-        html += '<tr><td>' + t + '</td><td>' + escapeHtml(h.operator || h.Operator || '') + '</td><td>' + escapeHtml(h.service || h.Service || '') + '</td><td>' + escapeHtml(h.file_name || h.FileName || '') + '</td><td class="' + cls + '">' + state + '</td></tr>';
+        html += '<tr><td>' + t + '</td><td>' + escapeHtml(h.operator || h.Operator || '') + '</td><td>' + escapeHtml(h.service || h.Service || '') + '</td><td>' + escapeHtml(h.node || h.Node || '') + '</td><td>' + escapeHtml(h.file_name || h.FileName || '') + '</td><td class="' + cls + '">' + state + '</td></tr>';
       });
       html += '</tbody></table>';
       document.getElementById('history').innerHTML = html;
@@ -303,5 +386,6 @@ function cssSelector(s) {
 
 // 初始化
 loadServices();
+loadNodes();
 loadHistory();
 setInterval(loadServices, 5000);

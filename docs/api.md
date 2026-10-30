@@ -240,6 +240,80 @@ done
 
 管理目标路径配置。
 
+### 3.9 节点列表
+
+**GET /api/nodes**
+
+返回可参与批量更新的节点列表（未配置 `cluster` 时仅返回本机）。
+
+**响应** (200):
+
+```json
+[
+  {"name": "node-1", "url": "http://10.0.0.11:8080", "is_self": true},
+  {"name": "node-2", "url": "http://10.0.0.12:8080", "is_self": false}
+]
+```
+
+### 3.10 批量部署（多节点滚动更新）
+
+**POST /api/cluster/deploy**
+
+使用已上传的文件，在选中的多个节点上**串行滚动**执行部署（停服 → 覆盖 → 启服），立即返回 `batch_id`。
+
+**请求**: `application/json`
+
+```json
+{
+  "upload_id": "1709644800000001",
+  "service": "MyAppService",
+  "target_dir": "app/target",
+  "files_only": false,
+  "nodes": ["node-1", "node-2"]
+}
+```
+
+- `nodes` 为空表示全部节点；执行顺序始终按 `cluster.nodes` 配置顺序。
+- 同一时刻只有一个节点停机；单个节点失败不会中止后续节点。
+
+**响应** (200):
+
+```json
+{"batch_id": "1709644800000099", "status": "pending"}
+```
+
+### 3.11 批量部署状态
+
+**GET /api/cluster/status?id={batch_id}**
+
+**响应** (200):
+
+```json
+{
+  "batch_id": "1709644800000099",
+  "status": "partial",
+  "service": "MyAppService",
+  "target_dir": "app/target",
+  "file_name": "update.zip",
+  "files_only": false,
+  "nodes": [
+    {
+      "name": "node-1", "is_self": true, "status": "success", "final_state": "success", "duration": 5320,
+      "steps": [{"name": "stop", "status": "success", "message": "服务已停止", "duration": 3205}]
+    },
+    {
+      "name": "node-2", "is_self": false, "status": "failed", "final_state": "failed", "duration": 1200,
+      "steps": [{"name": "remote", "status": "failed", "message": "分发文件到节点 node-2 失败: ...", "duration": 0}]
+    }
+  ],
+  "created_at": "2026-10-30T10:00:00Z"
+}
+```
+
+**status 取值**: `pending` / `running` / `success`（全部成功）/ `partial`（部分失败）/ `failed`（全部失败）
+
+远端节点由当前节点调用其 `POST /api/upload` 与 `POST /api/deploy` 完成，因此每个节点都需要运行本工具，并在 `cluster.nodes` 中配置对方的 `url` 与 `api_token`。
+
 ## 4. 错误码
 
 | HTTP 状态码 | 说明 |
@@ -272,7 +346,8 @@ Retry-After: 60
 
 1. 在 `config.yaml` 中设置 `auth.api_token`（建议使用随机字符串）
 2. 按需配置 `rate_limit`
-3. 重启服务
+3. 多节点部署时，每台服务器都需运行本工具，并配置 `node_name` 与 `cluster.nodes`（含对方 `url` 与 `api_token`）
+4. 重启服务
 
 ### 6.2 客户端对接（curl）
 

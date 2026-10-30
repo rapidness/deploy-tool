@@ -379,8 +379,8 @@ type DeployInput struct {
 
 // DeployResult 部署流程结果。
 type DeployResult struct {
-	Steps      []StepResult
-	FinalState string // success / failed
+	Steps      []StepResult `json:"steps"`
+	FinalState string       `json:"final_state"` // success / failed
 }
 
 // DeployFile 将单个文件写入 rootDir 下的目标路径。

@@ -221,3 +221,101 @@ func TestLoadRateLimitDefaults(t *testing.T) {
 		t.Errorf("rate_limit should be disabled by default")
 	}
 }
+
+func TestLoadClusterNodes(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, `
+server:
+  host: "127.0.0.1"
+  port: 9090
+auth:
+  username: "a"
+  password: "b"
+root_dir: "."
+node_name: "node-1"
+services:
+  - name: "SvcA"
+cluster:
+  nodes:
+    - name: "node-1"
+      url: "http://10.0.0.11:8080/"
+      api_token: "t1"
+    - name: "node-2"
+      url: "http://10.0.0.12:8080/update"
+      api_token: "t2"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SelfName() != "node-1" {
+		t.Errorf("SelfName = %q", cfg.SelfName())
+	}
+	if !cfg.IsSelf("node-1") || cfg.IsSelf("node-2") {
+		t.Errorf("IsSelf 判断错误")
+	}
+	if got := cfg.NodeNames(); len(got) != 2 || got[1] != "node-2" {
+		t.Errorf("NodeNames = %v", got)
+	}
+	if cfg.Cluster.Nodes[0].URL != "http://10.0.0.11:8080" {
+		t.Errorf("URL 未规范化: %q", cfg.Cluster.Nodes[0].URL)
+	}
+	if _, ok := cfg.FindNode("node-2"); !ok {
+		t.Errorf("FindNode(node-2) 未找到")
+	}
+}
+
+func TestLoadClusterSelfNameMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, `
+server:
+  host: "127.0.0.1"
+  port: 9090
+auth:
+  username: "a"
+  password: "b"
+root_dir: "."
+node_name: "node-x"
+services:
+  - name: "SvcA"
+cluster:
+  nodes:
+    - name: "node-1"
+      url: "http://10.0.0.11:8080"
+`)
+	if _, err := Load(path); err == nil {
+		t.Errorf("node_name 未在 cluster.nodes 中时应报错")
+	}
+}
+
+func TestLoadClusterDuplicateNode(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestConfig(t, dir, `
+server:
+  host: "127.0.0.1"
+  port: 9090
+auth:
+  username: "a"
+  password: "b"
+root_dir: "."
+node_name: "node-1"
+services:
+  - name: "SvcA"
+cluster:
+  nodes:
+    - name: "node-1"
+      url: "http://10.0.0.11:8080"
+    - name: "node-1"
+      url: "http://10.0.0.12:8080"
+`)
+	if _, err := Load(path); err == nil {
+		t.Errorf("节点名称重复时应报错")
+	}
+}
+
+func TestNodeNamesSingleMachine(t *testing.T) {
+	cfg := &Config{}
+	if got := cfg.NodeNames(); len(got) != 1 || got[0] != "本机" {
+		t.Errorf("单机模式 NodeNames = %v", got)
+	}
+}

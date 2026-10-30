@@ -23,6 +23,19 @@ services:
   - name: "AnotherService"
     display_name: "另一个服务"
 
+# ===== 多节点（CLB 后端多台服务器）配置，单机部署时可整体删除 =====
+# 本节点名称，必须与下方 cluster.nodes 中某一项的 name 一致
+# node_name: "node-1"
+#
+# cluster:
+#   nodes:
+#     - name: "node-1"
+#       url: "http://10.0.0.11:8080"        # 内网地址，可含 base_path，如 http://10.0.0.11:8080/update
+#       api_token: "node1-secret-token"     # 该节点 config.yaml 中的 auth.api_token
+#     - name: "node-2"
+#       url: "http://10.0.0.12:8080"
+#       api_token: "node2-secret-token"
+
 log:
   path: "logs"
   max_size_mb: 10

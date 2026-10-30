@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"update-app/internal/cluster"
 	"update-app/internal/config"
 	"update-app/internal/middleware"
 	"update-app/internal/service"
@@ -29,10 +31,12 @@ type Handler struct {
 	auth    *middleware.Auth
 	targets *targets.Store
 	rl      *middleware.RateLimiter
+	clients map[string]*cluster.Client // 远端节点客户端（不含本机）
 
 	mu             sync.Mutex
 	uploads        map[string]uploadEntry // uploadID -> 上传内容
 	deployStatuses sync.Map
+	batches        sync.Map
 }
 
 // uploadEntry 保存已上传的文件数据（多文件）。
@@ -62,7 +66,22 @@ type DeployStatusEntry struct {
 
 // New 创建 Handler。
 func New(cfg *config.Config, st *store.Store, auth *middleware.Auth, ts *targets.Store, rl *middleware.RateLimiter) *Handler {
-	return &Handler{cfg: cfg, store: st, auth: auth, targets: ts, rl: rl, uploads: make(map[string]uploadEntry)}
+	clients := make(map[string]*cluster.Client)
+	for _, n := range cfg.Cluster.Nodes {
+		if cfg.IsSelf(n.Name) {
+			continue
+		}
+		clients[n.Name] = cluster.NewClient(n)
+	}
+	return &Handler{
+		cfg:     cfg,
+		store:   st,
+		auth:    auth,
+		targets: ts,
+		rl:      rl,
+		clients: clients,
+		uploads: make(map[string]uploadEntry),
+	}
 }
 
 // Routes 注册所有路由。
@@ -92,10 +111,13 @@ func (h *Handler) Routes() http.Handler {
 	}
 
 	registerAPI(bp+"/api/services", h.services)
+	registerAPI(bp+"/api/nodes", h.nodes)
 	registerAPI(bp+"/api/upload", h.upload)
 	registerAPI(bp+"/api/deploy", h.deploy)
 	registerAPI(bp+"/api/deploy/upload", h.deployUpload)
 	registerAPI(bp+"/api/deploy/status", h.deployStatus)
+	registerAPI(bp+"/api/cluster/deploy", h.clusterDeploy)
+	registerAPI(bp+"/api/cluster/status", h.clusterStatus)
 	registerAPI(bp+"/api/history", h.history)
 	registerAPI(bp+"/api/service/control", h.control)
 	registerAPI(bp+"/api/targets", h.handleTargets)
@@ -180,6 +202,305 @@ func (h *Handler) services(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, resp)
+}
+
+// nodeResp 节点信息响应。
+type nodeResp struct {
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	IsSelf bool   `json:"is_self"`
+}
+
+// nodes 返回可参与批量更新的节点列表。
+func (h *Handler) nodes(w http.ResponseWriter, r *http.Request) {
+	list := make([]nodeResp, 0, len(h.cfg.Cluster.Nodes))
+	for _, n := range h.cfg.Cluster.Nodes {
+		list = append(list, nodeResp{Name: n.Name, URL: n.URL, IsSelf: h.cfg.IsSelf(n.Name)})
+	}
+	if len(list) == 0 {
+		list = append(list, nodeResp{Name: h.cfg.SelfName(), IsSelf: true})
+	}
+	writeJSON(w, list)
+}
+
+// batchDeployReq 批量部署请求体。
+type batchDeployReq struct {
+	UploadID  string   `json:"upload_id"`
+	Service   string   `json:"service"`
+	TargetDir string   `json:"target_dir"`
+	FilesOnly bool     `json:"files_only"`
+	Nodes     []string `json:"nodes"` // 为空表示全部节点
+}
+
+// BatchNodeStatus 单节点执行状态。
+type BatchNodeStatus struct {
+	Name       string               `json:"name"`
+	IsSelf     bool                 `json:"is_self"`
+	Status     string               `json:"status"` // pending / running / success / failed
+	Steps      []service.StepResult `json:"steps"`
+	FinalState string               `json:"final_state"`
+	Duration   int64                `json:"duration"`
+}
+
+// BatchStatusEntry 批量部署状态条目。
+type BatchStatusEntry struct {
+	BatchID   string             `json:"batch_id"`
+	Status    string             `json:"status"` // pending / running / success / partial / failed
+	Service   string             `json:"service"`
+	TargetDir string             `json:"target_dir"`
+	FileName  string             `json:"file_name"`
+	FilesOnly bool               `json:"files_only"`
+	UploadID  string             `json:"-"`
+	Nodes     []*BatchNodeStatus `json:"nodes"`
+	CreatedAt time.Time          `json:"created_at"`
+}
+
+// batchState 为批量状态附加互斥锁，避免执行与查询并发读写。
+type batchState struct {
+	mu    sync.Mutex
+	entry BatchStatusEntry
+}
+
+// snapshot 返回批量状态的深拷贝，供并发读取。
+func (s *batchState) snapshot() BatchStatusEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := s.entry
+	cp.Nodes = make([]*BatchNodeStatus, len(s.entry.Nodes))
+	for i, n := range s.entry.Nodes {
+		node := *n
+		cp.Nodes[i] = &node
+	}
+	return cp
+}
+
+// clusterDeploy 批量部署接口：按节点顺序串行滚动执行，立即返回 batch_id。
+func (h *Handler) clusterDeploy(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "方法不允许", http.StatusMethodNotAllowed)
+		return
+	}
+	var req batchDeployReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]any{"error": "解析请求失败: " + err.Error()})
+		return
+	}
+	if _, ok := h.cfg.FindService(req.Service); !ok {
+		writeJSON(w, map[string]any{"error": "未知服务: " + req.Service})
+		return
+	}
+	if req.TargetDir == "" {
+		writeJSON(w, map[string]any{"error": "目标路径不能为空"})
+		return
+	}
+	h.mu.Lock()
+	entry, ok := h.uploads[req.UploadID]
+	h.mu.Unlock()
+	if !ok {
+		writeJSON(w, map[string]any{"error": "上传文件不存在或已过期，请重新上传"})
+		return
+	}
+	selected, err := h.selectNodes(req.Nodes)
+	if err != nil {
+		writeJSON(w, map[string]any{"error": err.Error()})
+		return
+	}
+
+	nodeStatuses := make([]*BatchNodeStatus, 0, len(selected))
+	for _, name := range selected {
+		nodeStatuses = append(nodeStatuses, &BatchNodeStatus{
+			Name:   name,
+			IsSelf: h.cfg.IsSelf(name),
+			Status: "pending",
+		})
+	}
+	batchID := generateUploadID()
+	state := &batchState{entry: BatchStatusEntry{
+		BatchID:   batchID,
+		Status:    "pending",
+		Service:   req.Service,
+		TargetDir: req.TargetDir,
+		FileName:  fileNamesOf(entry),
+		FilesOnly: req.FilesOnly,
+		UploadID:  req.UploadID,
+		Nodes:     nodeStatuses,
+		CreatedAt: time.Now(),
+	}}
+	h.batches.Store(batchID, state)
+	h.evictOldBatches()
+
+	go h.runBatch(state, entry, h.auth.Username)
+
+	writeJSON(w, map[string]any{"batch_id": batchID, "status": "pending"})
+}
+
+// runBatch 串行滚动执行各节点部署；单节点失败后继续执行后续节点。
+func (h *Handler) runBatch(state *batchState, entry uploadEntry, operator string) {
+	state.mu.Lock()
+	state.entry.Status = "running"
+	state.mu.Unlock()
+
+	failed := 0
+	for _, node := range state.entry.Nodes {
+		state.mu.Lock()
+		node.Status = "running"
+		state.mu.Unlock()
+
+		start := time.Now()
+		var res service.DeployResult
+		if node.IsSelf {
+			res = h.deployMulti(state.entry.Service, state.entry.TargetDir, entry, state.entry.FilesOnly)
+		} else {
+			res = h.deployRemote(node.Name, state.entry.Service, state.entry.TargetDir, entry, state.entry.FilesOnly)
+		}
+
+		state.mu.Lock()
+		node.Steps = res.Steps
+		node.FinalState = res.FinalState
+		node.Status = res.FinalState
+		node.Duration = time.Since(start).Milliseconds()
+		state.mu.Unlock()
+
+		if res.FinalState != "success" {
+			failed++
+		}
+		h.addHistory(operator, state.entry.Service, node.Name, state.entry.FileName, res)
+	}
+
+	final := "success"
+	switch {
+	case failed == len(state.entry.Nodes):
+		final = "failed"
+	case failed > 0:
+		final = "partial"
+	}
+	state.mu.Lock()
+	state.entry.Status = final
+	state.mu.Unlock()
+
+	h.mu.Lock()
+	delete(h.uploads, state.entry.UploadID)
+	h.mu.Unlock()
+}
+
+// deployRemote 将文件分发到远端节点并触发其部署。
+func (h *Handler) deployRemote(nodeName, serviceName, targetDir string, entry uploadEntry, filesOnly bool) service.DeployResult {
+	client, ok := h.clients[nodeName]
+	if !ok {
+		return failedDeployResult(fmt.Errorf("节点 %s 未配置为本机的远端节点", nodeName))
+	}
+	files := make([]cluster.File, 0, len(entry.Files))
+	for _, f := range entry.Files {
+		files = append(files, cluster.File{Name: f.FileName, Data: f.Data})
+	}
+	uploadID, err := client.Upload(files)
+	if err != nil {
+		return failedDeployResult(fmt.Errorf("分发文件到节点 %s 失败: %w", nodeName, err))
+	}
+	res, err := client.Deploy(uploadID, serviceName, targetDir, filesOnly)
+	if err != nil {
+		return failedDeployResult(fmt.Errorf("节点 %s 部署失败: %w", nodeName, err))
+	}
+	return res
+}
+
+// clusterStatus 查询批量部署状态。
+func (h *Handler) clusterStatus(w http.ResponseWriter, r *http.Request) {
+	batchID := r.URL.Query().Get("id")
+	if batchID == "" {
+		writeJSON(w, map[string]any{"error": "缺少 id 参数"})
+		return
+	}
+	v, ok := h.batches.Load(batchID)
+	if !ok {
+		http.Error(w, "批量部署记录不存在", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, v.(*batchState).snapshot())
+}
+
+// selectNodes 校验并返回待更新节点，按配置顺序排列；requested 为空表示全部节点。
+func (h *Handler) selectNodes(requested []string) ([]string, error) {
+	if len(requested) == 0 {
+		return h.cfg.NodeNames(), nil
+	}
+	chosen := make(map[string]bool, len(requested))
+	for _, name := range requested {
+		if len(h.cfg.Cluster.Nodes) == 0 {
+			if name != h.cfg.SelfName() {
+				return nil, fmt.Errorf("未知节点: %s", name)
+			}
+		} else if _, ok := h.cfg.FindNode(name); !ok {
+			return nil, fmt.Errorf("未知节点: %s", name)
+		}
+		chosen[name] = true
+	}
+	ordered := make([]string, 0, len(chosen))
+	for _, name := range h.cfg.NodeNames() {
+		if chosen[name] {
+			ordered = append(ordered, name)
+		}
+	}
+	return ordered, nil
+}
+
+// evictOldBatches 淘汰旧的批量部署记录，保留最近 50 条。
+func (h *Handler) evictOldBatches() {
+	count := 0
+	h.batches.Range(func(key, value any) bool {
+		count++
+		return true
+	})
+	if count <= 50 {
+		return
+	}
+	type kv struct {
+		key string
+		t   time.Time
+	}
+	var entries []kv
+	h.batches.Range(func(key, value any) bool {
+		e := value.(*batchState)
+		entries = append(entries, kv{key: key.(string), t: e.entry.CreatedAt})
+		return true
+	})
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].t.Before(entries[j].t)
+	})
+	for i := 0; i < count-50; i++ {
+		h.batches.Delete(entries[i].key)
+	}
+}
+
+// failedDeployResult 构造一个失败的单步部署结果。
+func failedDeployResult(err error) service.DeployResult {
+	return service.DeployResult{
+		Steps:      []service.StepResult{{Name: "remote", Status: "failed", Message: err.Error()}},
+		FinalState: "failed",
+	}
+}
+
+// addHistory 记录一次节点级部署历史。
+func (h *Handler) addHistory(operator, serviceName, node, fileName string, res service.DeployResult) {
+	if _, err := h.store.Add(store.History{
+		Operator:   operator,
+		Service:    serviceName,
+		Node:       node,
+		FileName:   fileName,
+		Steps:      toStoreSteps(res.Steps),
+		FinalState: res.FinalState,
+	}); err != nil {
+		log.Printf("记录操作历史失败: %v", err)
+	}
+}
+
+// fileNamesOf 返回上传文件名摘要。
+func fileNamesOf(entry uploadEntry) string {
+	names := make([]string, 0, len(entry.Files))
+	for _, f := range entry.Files {
+		names = append(names, f.FileName)
+	}
+	return strings.Join(names, ", ")
 }
 
 // uploadResp 上传接口响应。
@@ -288,20 +609,8 @@ func (h *Handler) deploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := h.deployMulti(req.Service, req.TargetDir, entry, req.FilesOnly)
+	h.addHistory(h.auth.Username, req.Service, h.cfg.SelfName(), fileNamesOf(entry), result)
 
-	// 记算文件名摘要
-	fileNames := make([]string, 0, len(entry.Files))
-	for _, f := range entry.Files {
-		fileNames = append(fileNames, f.FileName)
-	}
-	hist := store.History{
-		Operator:   h.auth.Username,
-		Service:    req.Service,
-		FileName:   strings.Join(fileNames, ", "),
-		Steps:      toStoreSteps(result.Steps),
-		FinalState: result.FinalState,
-	}
-	h.store.Add(hist)
 	h.mu.Lock()
 	delete(h.uploads, req.UploadID)
 	h.mu.Unlock()
@@ -633,14 +942,7 @@ func (h *Handler) deployUpload(w http.ResponseWriter, r *http.Request) {
 		statusEntry.Steps = result.Steps
 		statusEntry.FinalState = result.FinalState
 
-		hist := store.History{
-			Operator:   "api",
-			Service:    serviceName,
-			FileName:   header.Filename,
-			Steps:      toStoreSteps(result.Steps),
-			FinalState: result.FinalState,
-		}
-		h.store.Add(hist)
+		h.addHistory("api", serviceName, h.cfg.SelfName(), header.Filename, result)
 	}()
 
 	writeJSON(w, map[string]any{"deploy_id": deployID, "status": "pending"})
