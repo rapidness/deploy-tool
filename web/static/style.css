@@ -38,6 +38,11 @@ code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; font-siz
 .btn-danger { background: #dc2626; }
 .btn-danger:hover { background: #b91c1c; }
 .upload-info { margin-top: 0.3rem; }
+.dir-deploy { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.dir-deploy .target-dir-input { flex: 1 1 100%; margin-top: 0; padding: 0.3rem; border: 1px solid #ddd; border-radius: 3px; font-size: 0.85rem; }
+.dir-deploy button { white-space: nowrap; }
+.dir-deploy .dir-delete-label { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.8rem; white-space: nowrap; cursor: pointer; }
+.dir-deploy input[type=checkbox] { flex: none; width: auto; margin: 0; }
 .node-item { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0 1.25rem 0.4rem 0; font-size: 0.9rem; }
 .node-item input[type=checkbox] { display: inline-block; width: auto; margin: 0; }
 
@@ -51,4 +56,6 @@ code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; font-siz
 .log-viewer-content { padding: 1rem; margin: 0; overflow: auto; font-family: Consolas, "Courier New", monospace; font-size: 0.82rem; white-space: pre-wrap; word-break: break-all; background: #fafafa; flex: 1; }
 .header-links { display: flex; align-items: center; gap: 1rem; }
 .logs-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; align-items: center; }
+.log-node { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; white-space: nowrap; }
+.log-node select { width: auto; margin-top: 0; padding: 0.4rem; }
 .log-search-input { flex: 1; padding: 0.4rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.85rem; }

@@ -6,12 +6,12 @@
 
 ### 技术栈
 
-| 层 | 技术 | 说明 |
-|----|------|------|
-| 后端 | Go (Golang) | 单静态二进制，零运行时依赖 |
+| 层  | 技术                      | 说明                      |
+| -- | ----------------------- | ----------------------- |
+| 后端 | Go (Golang)             | 单静态二进制，零运行时依赖           |
 | 前端 | 原生 HTML + htmx + 轻量 CSS | 无构建步骤，通过 `embed` 编译进二进制 |
-| 配置 | YAML | `gopkg.in/yaml.v3` |
-| 认证 | SHA-256 + Cookie 会话 | 密码哈希存储，非明文 |
+| 配置 | YAML                    | `gopkg.in/yaml.v3`      |
+| 认证 | SHA-256 + Cookie 会话     | 密码哈希存储，非明文              |
 
 ### 项目结构
 
@@ -53,7 +53,7 @@ update-app/
 
 需 Go 1.16+（本项目使用 `embed` 包），推荐 Go 1.21+。
 
-下载地址：https://go.dev/dl/
+下载地址：<https://go.dev/dl/>
 
 安装后验证：
 
@@ -157,9 +157,6 @@ go build -o app.exe ./cmd/app
 
 ### 4.3 停止服务
 
-- 前台运行时：按 `Ctrl+C`
-- 后台运行时：`taskkill /IM app.exe /F`
-
 ### 4.4 调试技巧
 
 **热重载**（推荐安装 [air](https://github.com/cosmtrek/air)）：
@@ -190,21 +187,22 @@ dlv exec ./app.exe -- -config config.yaml
 
 ### 4.5 命令行参数
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `-config` | 配置文件路径 | `config.yaml` |
-| `-hash-password` | 计算指定密码的 SHA-256 哈希并退出 | 无 |
+| 参数               | 说明                    | 默认值           |
+| ---------------- | --------------------- | ------------- |
+| `-config`        | 配置文件路径                | `config.yaml` |
+| `-hash-password` | 计算指定密码的 SHA-256 哈希并退出 | 无             |
 
 ## 5. 编译打包
 
 ### 5.1 基本编译
 
-```bash
+
 # 编译为当前平台的可执行文件
+```bash
 go build -o app.exe ./cmd/app
 ```
 
-产物 `app.exe` 约 10~15MB，已包含全部前端资源（通过 `embed`）。
+产物 `app.exe` 约 10\~15MB，已包含全部前端资源（通过 `embed`）。
 
 ### 5.2 交叉编译
 
@@ -227,10 +225,10 @@ CGO_ENABLED=0 GOOS=windows GOARCH=386 go build -o app.exe ./cmd/app
 go build -ldflags="-s -w" -o app.exe ./cmd/app
 ```
 
-| 方式 | 体积（参考） |
-|------|-------------|
-| 默认编译 | ~15MB |
-| `-ldflags="-s -w"` | ~10MB |
+| 方式                 | 体积（参考） |
+| ------------------ | ------ |
+| 默认编译               | \~15MB |
+| `-ldflags="-s -w"` | \~10MB |
 
 ### 5.4 编译验证
 
@@ -276,13 +274,13 @@ go tool cover -html=coverage.out -o coverage.html
 
 ### 6.5 测试内容概览
 
-| 模块 | 测试用例数 | 覆盖内容 |
-|------|-----------|---------|
-| config | 7 | 合法/非法配置、端口校验、空认证、空服务、服务查找 |
-| store | 5 | 增删查、排序、limit、文件持久化与重载 |
-| service | 10 | zip 校验、路径安全（越界/绝对路径）、解压覆盖、目录条目 |
-| middleware | 6 | 密码哈希、登录成功/失败、cookie 鉴权、API 401 |
-| handler | 1 | 辅助函数解析 |
+| 模块         | 测试用例数 | 覆盖内容                           |
+| ---------- | ----- | ------------------------------ |
+| config     | 7     | 合法/非法配置、端口校验、空认证、空服务、服务查找      |
+| store      | 5     | 增删查、排序、limit、文件持久化与重载          |
+| service    | 10    | zip 校验、路径安全（越界/绝对路径）、解压覆盖、目录条目 |
+| middleware | 6     | 密码哈希、登录成功/失败、cookie 鉴权、API 401 |
+| handler    | 1     | 辅助函数解析                         |
 
 ## 7. 部署
 
@@ -296,37 +294,6 @@ config.yaml      # 配置文件
 ```
 
 ### 7.2 部署步骤
-
-1. **编译**（在开发机或 CI 上）：
-
-   ```bash
-   go build -ldflags="-s -w" -o app.exe ./cmd/app
-   ```
-
-2. **传输文件**到目标 Windows 服务器：
-
-   将 `app.exe` 和 `config.yaml` 拷贝到服务器同一目录下：
-
-   ```
-   C:\update-app\
-   ├── app.exe
-   └── config.yaml
-   ```
-
-3. **修改配置**：编辑服务器上的 `config.yaml`，设置正确的 `root_dir`、`services` 等。
-
-4. **启动**：
-
-   ```bash
-   # 方式一：命令行启动
-   cd C:\update-app
-   app.exe -config config.yaml
-
-   # 方式二：双击运行（使用同目录默认 config.yaml）
-   双击 app.exe
-   ```
-
-5. **访问**：在开发机浏览器打开 `http://服务器IP:8080`，登录后即可操作。
 
 ### 7.3 注册为 Windows 服务（可选）
 
@@ -368,39 +335,31 @@ C:\update-app\
 
 ### 8.1 典型操作步骤
 
-1. 本地完成代码修改与构建，打包为 zip（如 `update.zip`）
-2. 浏览器打开系统地址，登录
-3. 主界面查看各服务当前状态
-4. 选择目标服务，上传 zip 文件
-5. 点击「执行更新」
-6. 系统自动执行：停服务 → 解压覆盖 → 起服务，并实时反馈每步结果
-7. 在「操作历史」中查看本次操作详情
-
 ### 8.2 手动控制服务
 
 在「服务状态」区域，可对单个服务执行启动/停止/重启操作（不影响文件）。
 
 ### 8.3 失败处理
 
-| 失败场景 | 系统行为 | 用户后续操作 |
-|---------|---------|-------------|
-| 停服务失败 | 中止，不覆盖文件 | 检查服务状态与权限 |
-| 解压覆盖失败 | 中止，不启动服务 | 服务保持停止状态，用户手动处理 |
-| 启动服务失败 | 提示错误，文件已覆盖 | 检查服务配置或手动启动 |
+| 失败场景   | 系统行为       | 用户后续操作          |
+| ------ | ---------- | --------------- |
+| 停服务失败  | 中止，不覆盖文件   | 检查服务状态与权限       |
+| 解压覆盖失败 | 中止，不启动服务   | 服务保持停止状态，用户手动处理 |
+| 启动服务失败 | 提示错误，文件已覆盖 | 检查服务配置或手动启动     |
 
 ## 9. API 接口
 
 所有 API 需携带登录 Cookie。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/` | 主页面 |
-| GET | `/login` | 登录页面 |
-| POST | `/login` | 提交登录 |
-| POST | `/logout` | 登出 |
-| GET | `/api/services` | 获取所有服务状态 |
-| POST | `/api/deploy` | 执行更新（multipart：service + file） |
-| GET | `/api/history` | 获取操作历史（最近 50 条） |
+| 方法   | 路径                     | 说明                                          |
+| ---- | ---------------------- | ------------------------------------------- |
+| GET  | `/`                    | 主页面                                         |
+| GET  | `/login`               | 登录页面                                        |
+| POST | `/login`               | 提交登录                                        |
+| POST | `/logout`              | 登出                                          |
+| GET  | `/api/services`        | 获取所有服务状态                                    |
+| POST | `/api/deploy`          | 执行更新（multipart：service + file）              |
+| GET  | `/api/history`         | 获取操作历史（最近 50 条）                             |
 | POST | `/api/service/control` | 手动控制服务（service + action=start/stop/restart） |
 
 ### 示例：执行更新
@@ -427,16 +386,9 @@ curl -X POST http://localhost:8080/api/deploy \
 
 ## 10. 安全注意事项
 
-1. **修改默认密码**：模板中默认密码为 `admin`，生产环境必须修改
-2. **限制监听地址**：内网使用建议 `host: "0.0.0.0"`，仅本机调试用 `host: "127.0.0.1"`
-3. **root_dir 边界**：系统严格限制解压路径不得越出 `root_dir`，防止目录穿越攻击
-4. **密码哈希存储**：配置文件中存储 SHA-256 哈希，非明文
-5. **Cookie 安全**：会话 Cookie 设置 `HttpOnly` + `SameSite=Strict`
-6. **不提交敏感配置**：`.gitignore` 已忽略 `config.yaml`，仅提交 `config.example.yaml`
-
 ## 11. 常见问题
 
-### Q: 启动时报 "root_dir 不存在"？
+### Q: 启动时报 "root\_dir 不存在"？
 
 A: 配置文件中 `root_dir` 指定的目录必须真实存在，请先在服务器上创建该目录。
 
@@ -454,4 +406,4 @@ A: 代码可在 Linux/Mac 上编译和运行测试（`go test ./...`），但服
 
 ### Q: 前端如何修改？
 
-A: 直接编辑 `web/static/` 下的 HTML/CSS/JS 文件，重新 `go build` 即可。无需前端构建工具。如需使用完整 htmx 功能，请从 https://htmx.org/ 下载 `htmx.min.js` 替换占位文件。
+A: 直接编辑 `web/static/` 下的 HTML/CSS/JS 文件，重新 `go build` 即可。无需前端构建工具。如需使用完整 htmx 功能，请从 <https://htmx.org/> 下载 `htmx.min.js` 替换占位文件。

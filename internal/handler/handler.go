@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -225,11 +226,13 @@ func (h *Handler) nodes(w http.ResponseWriter, r *http.Request) {
 
 // batchDeployReq 批量部署请求体。
 type batchDeployReq struct {
-	UploadID  string   `json:"upload_id"`
-	Service   string   `json:"service"`
-	TargetDir string   `json:"target_dir"`
-	FilesOnly bool     `json:"files_only"`
-	Nodes     []string `json:"nodes"` // 为空表示全部节点
+	UploadID     string   `json:"upload_id"`
+	SourceDir    string   `json:"source_dir"` // 服务器本机目录，与 upload_id 二选一
+	Service      string   `json:"service"`
+	TargetDir    string   `json:"target_dir"`
+	FilesOnly    bool     `json:"files_only"`
+	DeleteSource bool     `json:"delete_source"` // 全部节点更新成功后删除源目录本次读取的文件
+	Nodes        []string `json:"nodes"`         // 为空表示全部节点
 }
 
 // BatchNodeStatus 单节点执行状态。
@@ -257,8 +260,11 @@ type BatchStatusEntry struct {
 
 // batchState 为批量状态附加互斥锁，避免执行与查询并发读写。
 type batchState struct {
-	mu    sync.Mutex
-	entry BatchStatusEntry
+	mu           sync.Mutex
+	entry        BatchStatusEntry
+	sourceDir    string   // 目录模式下的源目录
+	sourceFiles  []string // 本次从源目录读取的文件名
+	deleteSource bool     // 全部节点成功后是否删除源目录文件
 }
 
 // snapshot 返回批量状态的深拷贝，供并发读取。
@@ -293,12 +299,34 @@ func (h *Handler) clusterDeploy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"error": "目标路径不能为空"})
 		return
 	}
-	h.mu.Lock()
-	entry, ok := h.uploads[req.UploadID]
-	h.mu.Unlock()
-	if !ok {
-		writeJSON(w, map[string]any{"error": "上传文件不存在或已过期，请重新上传"})
+	if req.SourceDir == "" && req.UploadID == "" {
+		writeJSON(w, map[string]any{"error": "请提供 upload_id 或 source_dir"})
 		return
+	}
+	if req.SourceDir != "" && req.UploadID != "" {
+		writeJSON(w, map[string]any{"error": "upload_id 与 source_dir 不能同时指定"})
+		return
+	}
+	var entry uploadEntry
+	fileName := ""
+	if req.SourceDir != "" {
+		e, err := readDirUpload(req.SourceDir)
+		if err != nil {
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		entry = e
+		fileName = "目录: " + filepath.Clean(req.SourceDir)
+	} else {
+		h.mu.Lock()
+		e, ok := h.uploads[req.UploadID]
+		h.mu.Unlock()
+		if !ok {
+			writeJSON(w, map[string]any{"error": "上传文件不存在或已过期，请重新上传"})
+			return
+		}
+		entry = e
+		fileName = fileNamesOf(entry)
 	}
 	selected, err := h.selectNodes(req.Nodes)
 	if err != nil {
@@ -320,12 +348,19 @@ func (h *Handler) clusterDeploy(w http.ResponseWriter, r *http.Request) {
 		Status:    "pending",
 		Service:   req.Service,
 		TargetDir: req.TargetDir,
-		FileName:  fileNamesOf(entry),
+		FileName:  fileName,
 		FilesOnly: req.FilesOnly,
 		UploadID:  req.UploadID,
 		Nodes:     nodeStatuses,
 		CreatedAt: time.Now(),
 	}}
+	if req.SourceDir != "" {
+		state.sourceDir = filepath.Clean(req.SourceDir)
+		state.deleteSource = req.DeleteSource
+		for _, f := range entry.Files {
+			state.sourceFiles = append(state.sourceFiles, f.FileName)
+		}
+	}
 	h.batches.Store(batchID, state)
 	h.evictOldBatches()
 
@@ -374,13 +409,18 @@ func (h *Handler) runBatch(state *batchState, entry uploadEntry, operator string
 	case failed > 0:
 		final = "partial"
 	}
+	if final == "success" && state.deleteSource && state.sourceDir != "" {
+		deleteSourceFiles(state.sourceDir, state.sourceFiles)
+	}
 	state.mu.Lock()
 	state.entry.Status = final
 	state.mu.Unlock()
 
-	h.mu.Lock()
-	delete(h.uploads, state.entry.UploadID)
-	h.mu.Unlock()
+	if state.entry.UploadID != "" {
+		h.mu.Lock()
+		delete(h.uploads, state.entry.UploadID)
+		h.mu.Unlock()
+	}
 }
 
 // deployRemote 将文件分发到远端节点并触发其部署。
@@ -501,6 +541,66 @@ func fileNamesOf(entry uploadEntry) string {
 		names = append(names, f.FileName)
 	}
 	return strings.Join(names, ", ")
+}
+
+// readDirUpload 读取服务器本机目录下的顶层文件，按上传文件的规则构造部署内容。
+func readDirUpload(dir string) (uploadEntry, error) {
+	const maxTotal = int64(500 << 20)
+	clean := filepath.Clean(dir)
+	if !filepath.IsAbs(clean) {
+		return uploadEntry{}, fmt.Errorf("目录必须是绝对路径: %s", dir)
+	}
+	info, err := os.Stat(clean)
+	if err != nil {
+		return uploadEntry{}, fmt.Errorf("读取目录失败: %w", err)
+	}
+	if !info.IsDir() {
+		return uploadEntry{}, fmt.Errorf("不是目录: %s", clean)
+	}
+	entries, err := os.ReadDir(clean)
+	if err != nil {
+		return uploadEntry{}, fmt.Errorf("读取目录失败: %w", err)
+	}
+	var files []uploadedFile
+	var total int64
+	for _, e := range entries {
+		fi, err := e.Info()
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if total+fi.Size() > maxTotal {
+			return uploadEntry{}, fmt.Errorf("目录内文件总大小超过 500MB")
+		}
+		data, err := os.ReadFile(filepath.Join(clean, e.Name()))
+		if err != nil {
+			return uploadEntry{}, fmt.Errorf("读取文件失败(%s): %w", e.Name(), err)
+		}
+		isZip := strings.HasSuffix(strings.ToLower(e.Name()), ".zip")
+		if isZip {
+			if _, err := service.VerifyZip(data); err != nil {
+				return uploadEntry{}, fmt.Errorf("zip 校验失败(%s): %w", e.Name(), err)
+			}
+		}
+		total += int64(len(data))
+		files = append(files, uploadedFile{FileName: e.Name(), Data: data, IsZip: isZip})
+	}
+	if len(files) == 0 {
+		return uploadEntry{}, fmt.Errorf("目录中没有文件: %s", clean)
+	}
+	return uploadEntry{Files: files, UploadTime: time.Now()}, nil
+}
+
+// deleteSourceFiles 更新成功后删除源目录中本次读取的文件。
+func deleteSourceFiles(dir string, names []string) {
+	for _, name := range names {
+		if !validLogName(name) {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		if err := os.Remove(p); err != nil {
+			log.Printf("删除源目录文件失败(%s): %v", p, err)
+		}
+	}
 }
 
 // uploadResp 上传接口响应。
@@ -768,8 +868,36 @@ type logEntry struct {
 	IsDir      bool   `json:"is_dir"`
 }
 
+// remoteClient 返回指定节点的远端客户端；节点为空或为本机时返回 remote=false。
+func (h *Handler) remoteClient(node string) (*cluster.Client, bool, error) {
+	if node == "" || h.cfg.IsSelf(node) {
+		return nil, false, nil
+	}
+	c, ok := h.clients[node]
+	if !ok {
+		return nil, false, fmt.Errorf("未知节点: %s", node)
+	}
+	return c, true, nil
+}
+
 // logs 返回 log_dir 下的日志文件列表（仅文件，不递归）。
+// 通过 node 参数指定节点；省略或为本机时读取本地目录，否则代理到该节点。
 func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
+	client, remote, err := h.remoteClient(r.URL.Query().Get("node"))
+	if err != nil {
+		writeJSON(w, map[string]any{"error": err.Error()})
+		return
+	}
+	if remote {
+		body, err := client.Get("/api/logs", "查询远端日志")
+		if err != nil {
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write(body)
+		return
+	}
 	if h.cfg.LogDir == "" {
 		writeJSON(w, map[string]any{"error": "log_dir 未配置"})
 		return
@@ -803,17 +931,23 @@ func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, list)
 }
 
+// validLogName 校验日志文件名，仅允许单层文件名。
+func validLogName(name string) bool {
+	cleaned := filepath.Clean(name)
+	return cleaned == name && !filepath.IsAbs(name) &&
+		!strings.ContainsAny(name, `/\`) && cleaned != "." && cleaned != ".."
+}
+
 // safeLogPath 校验请求的文件名不会越界 log_dir。
 func (h *Handler) safeLogPath(name string) (string, error) {
 	if h.cfg.LogDir == "" {
 		return "", fmt.Errorf("log_dir 未配置")
 	}
 	// 拒绝路径分隔符与绝对路径，仅允许单层文件名
-	cleaned := filepath.Clean(name)
-	if cleaned != name || filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) || cleaned == "." || cleaned == ".." {
+	if !validLogName(name) {
 		return "", fmt.Errorf("非法文件名: %s", name)
 	}
-	abs := filepath.Join(h.cfg.LogDir, cleaned)
+	abs := filepath.Join(h.cfg.LogDir, name)
 	absLogDir, err := filepath.Abs(h.cfg.LogDir)
 	if err != nil {
 		return "", err
@@ -839,6 +973,26 @@ func (h *Handler) logDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "缺少 name 参数", http.StatusBadRequest)
 		return
 	}
+	if !validLogName(name) {
+		http.Error(w, "非法文件名: "+name, http.StatusBadRequest)
+		return
+	}
+	client, remote, err := h.remoteClient(r.URL.Query().Get("node"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if remote {
+		body, err := client.Get("/api/logs/download?name="+url.QueryEscape(name), "下载远端日志")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+		w.Write(body)
+		return
+	}
 	abs, err := h.safeLogPath(name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -854,6 +1008,25 @@ func (h *Handler) logView(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	if name == "" {
 		http.Error(w, "缺少 name 参数", http.StatusBadRequest)
+		return
+	}
+	if !validLogName(name) {
+		http.Error(w, "非法文件名: "+name, http.StatusBadRequest)
+		return
+	}
+	client, remote, err := h.remoteClient(r.URL.Query().Get("node"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if remote {
+		body, err := client.Get("/api/logs/view?name="+url.QueryEscape(name), "查看远端日志")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write(body)
 		return
 	}
 	abs, err := h.safeLogPath(name)

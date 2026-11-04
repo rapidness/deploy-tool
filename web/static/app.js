@@ -111,6 +111,11 @@ function renderTargets() {
       + '<div class="target-left">'
       + '<input type="text" class="target-path-input" data-index="' + i + '" value="' + escapeAttr(path) + '" placeholder="相对根目录的路径，如 bin">'
       + '<input type="text" class="target-desc-input" data-index="' + i + '" value="' + escapeAttr(desc) + '" placeholder="描述（可选）">'
+      + '<div class="dir-deploy">'
+      + '<input type="text" class="target-dir-input" data-index="' + i + '" value="' + escapeAttr(t.source_dir || '') + '" placeholder="服务器目录（绝对路径），读取目录内文件部署">'
+      + '<button type="button" class="btn-sm" data-index="' + i + '" onclick="deployFromDir(' + i + ')">执行更新</button>'
+      + '<label class="dir-delete-label"><input type="checkbox" class="delete-source-input" data-index="' + i + '">是否删除原文件</label>'
+      + '</div>'
       + '<button type="button" class="btn-sm btn-danger" data-index="' + i + '" onclick="removeTarget(' + i + ')">删除</button>'
       + '</div>'
       + '<div class="target-right">'
@@ -121,6 +126,7 @@ function renderTargets() {
       + '<p class="muted">支持多文件</p>'
       + '</div>'
       + '<div class="upload-info" data-path="' + escapeAttr(path) + '">' + uploadHtml + '</div>'
+      + '<div class="dir-deploy-info" data-index="' + i + '"></div>'
       + '</div>'
       + '</div>';
   });
@@ -147,7 +153,7 @@ function removeTarget(index) {
 }
 
 document.getElementById('btn-add-target').addEventListener('click', function() {
-  currentTargets.push({ path: '', desc: '' });
+  currentTargets.push({ path: '', desc: '', source_dir: '' });
   renderTargets();
 });
 
@@ -155,11 +161,13 @@ document.getElementById('btn-save-targets').addEventListener('click', function()
   // 从输入框收集值
   var pathInputs = document.querySelectorAll('.target-path-input');
   var descInputs = document.querySelectorAll('.target-desc-input');
+  var dirInputs = document.querySelectorAll('.target-dir-input');
   var targets = [];
   pathInputs.forEach(function(inp, i) {
     var path = inp.value.trim();
     var desc = descInputs[i] ? descInputs[i].value.trim() : '';
-    if (path) { targets.push({ path: path, desc: desc }); }
+    var sourceDir = dirInputs[i] ? dirInputs[i].value.trim() : '';
+    if (path) { targets.push({ path: path, desc: desc, source_dir: sourceDir }); }
   });
   fetch(BASE + '/api/targets', {
     method: 'POST',
@@ -265,6 +273,47 @@ function deployTarget(path, filesOnly) {
     });
 }
 
+// 从服务器本机目录读取文件并执行更新（无需上传）
+function deployFromDir(index) {
+  if (!currentService) { alert('请选择服务'); return; }
+  var pathInput = document.querySelector('.target-path-input[data-index="' + index + '"]');
+  var dirInput = document.querySelector('.target-dir-input[data-index="' + index + '"]');
+  var deleteInput = document.querySelector('.delete-source-input[data-index="' + index + '"]');
+  var path = pathInput ? pathInput.value.trim() : '';
+  var dir = dirInput ? dirInput.value.trim() : '';
+  var deleteSource = deleteInput ? deleteInput.checked : false;
+  if (!path) { alert('请先填写目标路径'); return; }
+  if (!dir) { alert('请填写服务器目录'); return; }
+  var chosen = selectedNodes();
+  if (nodes.length > 0 && chosen.length === 0) { alert('请至少选择一个节点'); return; }
+
+  var infoDiv = document.querySelector('.dir-deploy-info[data-index="' + index + '"]');
+  if (infoDiv) infoDiv.innerHTML = '<p class="muted">正在提交更新...</p>';
+
+  fetch(BASE + '/api/cluster/deploy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source_dir: dir,
+      service: currentService,
+      target_dir: path,
+      delete_source: deleteSource,
+      nodes: chosen
+    })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+      if (res.error) {
+        if (infoDiv) infoDiv.innerHTML = '<p class="error">提交失败: ' + escapeHtml(res.error) + '</p>';
+        return;
+      }
+      pollBatch(res.batch_id, infoDiv, null);
+    })
+    .catch(function(err) {
+      if (infoDiv) infoDiv.innerHTML = '<p class="error">请求失败: ' + err.message + '</p>';
+    });
+}
+
 // 轮询批量部署状态，完成后展示各节点结果
 function pollBatch(batchID, infoDiv, path) {
   var timer = setInterval(function() {
@@ -279,7 +328,7 @@ function pollBatch(batchID, infoDiv, path) {
         if (infoDiv) infoDiv.innerHTML = renderBatchHtml(batch);
         if (batch.status === 'success' || batch.status === 'partial' || batch.status === 'failed') {
           clearInterval(timer);
-          delete targetUploads[path];
+          if (path) delete targetUploads[path];
           loadServices();
           loadHistory();
         }

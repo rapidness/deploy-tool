@@ -81,3 +81,31 @@ func TestDeployHTTPError(t *testing.T) {
 		t.Error("期望返回错误")
 	}
 }
+
+func TestGet(t *testing.T) {
+	var gotAuth, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotQuery = r.URL.RawQuery
+		if r.URL.Path != "/api/logs/view" {
+			t.Errorf("请求路径 = %q", r.URL.Path)
+		}
+		w.Write([]byte("log content"))
+	}))
+	defer srv.Close()
+
+	c := NewClient(config.ClusterNode{Name: "n1", URL: srv.URL + "/", APIToken: "tok"})
+	body, err := c.Get("/api/logs/view?name=a.log", "查看远端日志")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(body) != "log content" {
+		t.Errorf("响应体 = %q", string(body))
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("Authorization = %q", gotAuth)
+	}
+	if gotQuery != "name=a.log" {
+		t.Errorf("查询参数 = %q", gotQuery)
+	}
+}

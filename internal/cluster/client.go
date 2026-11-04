@@ -126,6 +126,16 @@ func (c *Client) Deploy(uploadID, serviceName, targetDir string, filesOnly bool)
 	return out.DeployResult, nil
 }
 
+// Get 请求远端节点的相对路径并返回响应体，用于代理日志查询/查看/下载。
+func (c *Client) Get(pathWithQuery, action string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+pathWithQuery, nil)
+	if err != nil {
+		return nil, fmt.Errorf("构造%s请求失败: %w", action, err)
+	}
+	c.setAuth(req)
+	return c.do(req, action)
+}
+
 // do 发送请求并返回响应体，非 200 状态视为错误。
 func (c *Client) do(req *http.Request, action string) ([]byte, error) {
 	resp, err := c.http.Do(req)

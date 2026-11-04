@@ -59,7 +59,7 @@ func TestStoreReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := s1.Save("svc", []Target{{Path: "x"}}); err != nil {
+	if err := s1.Save("svc", []Target{{Path: "x", SourceDir: `C:\build\release`}}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	s2, err := New(path)
@@ -69,6 +69,9 @@ func TestStoreReload(t *testing.T) {
 	got := s2.Get("svc")
 	if len(got) != 1 || got[0].Path != "x" {
 		t.Errorf("reload failed: %+v", got)
+	}
+	if len(got) == 1 && got[0].SourceDir != `C:\build\release` {
+		t.Errorf("source_dir 未持久化: %+v", got[0])
 	}
 }
 

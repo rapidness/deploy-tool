@@ -12,8 +12,9 @@ import (
 
 // Target 单个部署目标路径条目。
 type Target struct {
-	Path string `json:"path"` // 相对 rootDir 的目录路径
-	Desc string `json:"desc"` // 可选描述
+	Path      string `json:"path"`       // 相对 rootDir 的目录路径
+	Desc      string `json:"desc"`       // 可选描述
+	SourceDir string `json:"source_dir"` // 可选：服务器本机更新文件目录
 }
 
 // Store 按服务存储目标路径列表，基于本地 JSON 文件。

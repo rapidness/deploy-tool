@@ -238,7 +238,7 @@ done
 
 **POST /api/targets**
 
-管理目标路径配置。
+管理目标路径配置。每个条目可包含 `source_dir`（服务器本机更新文件目录），随目标配置一起保存。
 
 ### 3.9 节点列表
 
@@ -259,22 +259,25 @@ done
 
 **POST /api/cluster/deploy**
 
-使用已上传的文件，在选中的多个节点上**串行滚动**执行部署（停服 → 覆盖 → 启服），立即返回 `batch_id`。
+使用已上传的文件或服务器本机目录，在选中的多个节点上**串行滚动**执行部署（停服 → 覆盖 → 启服），立即返回 `batch_id`。
 
 **请求**: `application/json`
 
 ```json
 {
-  "upload_id": "1709644800000001",
+  "source_dir": "C:\\build\\release",
   "service": "MyAppService",
   "target_dir": "app/target",
   "files_only": false,
+  "delete_source": false,
   "nodes": ["node-1", "node-2"]
 }
 ```
 
+- `upload_id` 与 `source_dir` 二选一：前者使用上传缓存，后者读取服务器本机目录的顶层文件（zip 解压、普通文件覆盖）。
 - `nodes` 为空表示全部节点；执行顺序始终按 `cluster.nodes` 配置顺序。
 - 同一时刻只有一个节点停机；单个节点失败不会中止后续节点。
+- `delete_source=true` 时，全部节点更新成功后删除 `source_dir` 中本次读取的文件；失败或部分失败则保留，便于重试。
 
 **响应** (200):
 

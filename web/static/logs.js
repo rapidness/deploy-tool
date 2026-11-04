@@ -2,6 +2,7 @@
 
 var BASE = window.__BP__ || '';
 var allLogs = [];
+var currentNode = ''; // 当前查看的节点，空表示本机
 
 // 退出登录
 document.getElementById('btn-logout').addEventListener('click', function() {
@@ -12,11 +13,59 @@ document.getElementById('btn-refresh-logs').addEventListener('click', loadLogs);
 
 document.getElementById('log-search').addEventListener('input', renderLogs);
 
-loadLogs();
+document.getElementById('node-select').addEventListener('change', function() {
+  currentNode = this.value;
+  allLogs = [];
+  renderLogs();
+  loadLogs();
+});
+
+loadNodes().then(loadLogs);
 setInterval(loadLogs, 15000);
 
+// 加载节点列表并渲染节点下拉框；单节点时隐藏
+function loadNodes() {
+  return fetch(BASE + '/api/nodes')
+    .then(function(r) { return r.json(); })
+    .then(function(list) {
+      var nodes = list || [];
+      var wrap = document.getElementById('node-select-wrap');
+      var sel = document.getElementById('node-select');
+      if (nodes.length <= 1) {
+        wrap.style.display = 'none';
+        currentNode = nodes.length === 1 ? nodes[0].name : '';
+        return;
+      }
+      wrap.style.display = '';
+      sel.innerHTML = '';
+      nodes.forEach(function(n) {
+        var opt = document.createElement('option');
+        opt.value = n.name;
+        opt.textContent = n.name + (n.is_self ? '（本机）' : '');
+        sel.appendChild(opt);
+      });
+      // 默认查看本机日志
+      var self = nodes.filter(function(n) { return n.is_self; })[0];
+      if (self) sel.value = self.name;
+      currentNode = sel.value;
+    })
+    .catch(function() {
+      // 节点加载失败时退回本机日志
+      document.getElementById('node-select-wrap').style.display = 'none';
+      currentNode = '';
+    });
+}
+
+// logsURL 构造日志接口地址（action 为空表示列表）。
+function logsURL(action, name) {
+  var params = [];
+  if (currentNode) params.push('node=' + encodeURIComponent(currentNode));
+  if (name) params.push('name=' + encodeURIComponent(name));
+  return BASE + '/api/logs' + (action ? '/' + action : '') + (params.length ? '?' + params.join('&') : '');
+}
+
 function loadLogs() {
-  fetch(BASE + '/api/logs')
+  fetch(logsURL('', ''))
     .then(function(r) { return r.json(); })
     .then(function(list) {
       var div = document.getElementById('logs');
@@ -70,11 +119,11 @@ function formatSize(bytes) {
 }
 
 function downloadLog(name) {
-  window.location.href = BASE + '/api/logs/download?name=' + encodeURIComponent(name);
+  window.location.href = logsURL('download', name);
 }
 
 function viewLogNewTab(name) {
-  window.open(BASE + '/api/logs/view?name=' + encodeURIComponent(name), '_blank');
+  window.open(logsURL('view', name), '_blank');
 }
 
 var currentLogName = '';
@@ -84,12 +133,12 @@ function viewLog(name) {
   var viewer = document.getElementById('log-viewer');
   var content = document.getElementById('log-viewer-content');
   var title = document.getElementById('log-viewer-title');
-  title.textContent = '日志查看: ' + name;
+  title.textContent = '日志查看: ' + name + (currentNode ? '（' + currentNode + '）' : '');
   content.textContent = '加载中...';
   viewer.style.display = '';
   viewer.classList.remove('maximized');
   document.getElementById('btn-log-maximize').textContent = '最大化';
-  fetch(BASE + '/api/logs/view?name=' + encodeURIComponent(name))
+  fetch(logsURL('view', name))
     .then(function(r) {
       if (!r.ok) { throw new Error('HTTP ' + r.status); }
       return r.text();
@@ -120,7 +169,7 @@ document.getElementById('btn-log-maximize').addEventListener('click', function()
 
 document.getElementById('btn-log-newtab').addEventListener('click', function() {
   if (!currentLogName) return;
-  window.open(BASE + '/api/logs/view?name=' + encodeURIComponent(currentLogName), '_blank');
+  window.open(logsURL('view', currentLogName), '_blank');
 });
 
 // 工具函数
