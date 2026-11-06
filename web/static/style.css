@@ -46,6 +46,11 @@ code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; font-siz
 .node-item { display: inline-flex; align-items: center; gap: 0.4rem; margin: 0 1.25rem 0.4rem 0; font-size: 0.9rem; }
 .node-item input[type=checkbox] { display: inline-block; width: auto; margin: 0; }
 
+/* 操作历史分页 */
+.pager { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.75rem; }
+.pager-info { font-size: 0.85rem; color: #6b7280; margin-right: auto; }
+.pager button:disabled { background: #d1d5db; color: #9ca3af; cursor: not-allowed; }
+
 /* 日志查看弹窗 */
 .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; }
 .modal-content { background: #fff; border-radius: 6px; width: 80%; max-width: 1000px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }

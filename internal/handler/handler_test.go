@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -150,8 +151,9 @@ func TestReadDirUpload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readDirUpload: %v", err)
 	}
-	if len(entry.Files) != 2 {
-		t.Fatalf("文件数 = %d, want 2", len(entry.Files))
+	// 递归读取：顶层 2 个文件 + 子目录 1 个文件
+	if len(entry.Files) != 3 {
+		t.Fatalf("文件数 = %d, want 3: %+v", len(entry.Files), fileNamesOf(entry))
 	}
 	byName := make(map[string]uploadedFile, len(entry.Files))
 	for _, f := range entry.Files {
@@ -163,6 +165,9 @@ func TestReadDirUpload(t *testing.T) {
 	if byName["b.dll"].IsZip {
 		t.Error("b.dll 不应识别为 zip")
 	}
+	if _, ok := byName["sub/ignored.txt"]; !ok {
+		t.Errorf("子目录文件应带相对路径参与部署: %v", fileNamesOf(entry))
+	}
 }
 
 func TestReadDirUploadErrors(t *testing.T) {
@@ -171,6 +176,13 @@ func TestReadDirUploadErrors(t *testing.T) {
 	}
 	if _, err := readDirUpload(t.TempDir()); err == nil {
 		t.Error("空目录应返回错误")
+	}
+	onlyDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(onlyDir, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDirUpload(onlyDir); err == nil {
+		t.Error("只有空子目录应返回错误")
 	}
 	if _, err := readDirUpload(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("不存在的目录应返回错误")
@@ -242,5 +254,226 @@ func TestClusterDeployDeleteSource(t *testing.T) {
 	}
 	if _, err := os.Stat(srcFile); !os.IsNotExist(err) {
 		t.Errorf("更新成功后源文件应已删除, err=%v", err)
+	}
+}
+
+func TestHistoryPagedAndLegacy(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "history.json"))
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		h := store.History{Operator: "u", Service: "Svc", Time: time.Now().Add(time.Duration(i) * time.Second)}
+		if _, err := st.Add(h); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+	cfg := &config.Config{RootDir: t.TempDir(), Services: []config.ServiceEntry{{Name: "Svc"}}}
+	h := New(cfg, st, middleware.NewAuth("admin", "hash", "", ""), nil, nil)
+
+	// 不带参数：保持旧行为，返回最近 50 条数组
+	rec := httptest.NewRecorder()
+	h.history(rec, httptest.NewRequest(http.MethodGet, "/api/history", nil))
+	var legacy []store.History
+	if err := json.Unmarshal(rec.Body.Bytes(), &legacy); err != nil {
+		t.Fatalf("旧接口返回不是数组: %v, body=%s", err, rec.Body.String())
+	}
+	if len(legacy) != 12 {
+		t.Errorf("旧接口应返回 12 条，实际 %d", len(legacy))
+	}
+
+	// 带参数：返回分页对象
+	rec2 := httptest.NewRecorder()
+	h.history(rec2, httptest.NewRequest(http.MethodGet, "/api/history?page=2&page_size=10", nil))
+	var page store.PageResult
+	if err := json.Unmarshal(rec2.Body.Bytes(), &page); err != nil {
+		t.Fatalf("分页响应解析失败: %v", err)
+	}
+	if page.Total != 12 || page.Page != 2 || page.PageSize != 10 || len(page.Items) != 2 {
+		t.Errorf("分页结果不正确: %+v", page)
+	}
+
+	// page_size 上限
+	rec3 := httptest.NewRecorder()
+	h.history(rec3, httptest.NewRequest(http.MethodGet, "/api/history?page=1&page_size=1000", nil))
+	var capped store.PageResult
+	if err := json.Unmarshal(rec3.Body.Bytes(), &capped); err != nil {
+		t.Fatalf("分页响应解析失败: %v", err)
+	}
+	if capped.PageSize != 100 {
+		t.Errorf("page_size 应限制为 100，实际 %d", capped.PageSize)
+	}
+}
+
+func TestSafeRelativePath(t *testing.T) {
+	valid := []string{"a.dll", "sub/a.dll", `sub\a.dll`, "sub/deep/a.json"}
+	for _, v := range valid {
+		if _, err := safeRelativePath(v); err != nil {
+			t.Errorf("合法路径 %q 被拒绝: %v", v, err)
+		}
+	}
+	invalid := []string{"", ".", "..", "../a.dll", `..\a.dll`, "sub/../../a.dll", "/abs/a.dll", `C:\abs\a.dll`, "C:/abs/a.dll"}
+	for _, v := range invalid {
+		if _, err := safeRelativePath(v); err == nil {
+			t.Errorf("非法路径 %q 未拒绝", v)
+		}
+	}
+	got, err := safeRelativePath("sub/./a.dll")
+	if err != nil || got != "sub/a.dll" {
+		t.Errorf("规范化结果 = %q, err=%v", got, err)
+	}
+}
+
+func TestReadDirUploadRecursiveDeploy(t *testing.T) {
+	src := t.TempDir()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "app.dll"), []byte("top"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, "plugins", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "plugins", "p.dll"), []byte("plugin"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "plugins", "deep", "d.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestZip(t, filepath.Join(src, "plugins", "bundle.zip"), map[string]string{"inner/x.txt": "x"})
+
+	entry, err := readDirUpload(src)
+	if err != nil {
+		t.Fatalf("readDirUpload: %v", err)
+	}
+	wantNames := map[string]bool{
+		"app.dll": true, "plugins/p.dll": true, "plugins/deep/d.json": true, "plugins/bundle.zip": true,
+	}
+	if len(entry.Files) != len(wantNames) {
+		t.Fatalf("文件数 = %d: %v", len(entry.Files), fileNamesOf(entry))
+	}
+	for _, f := range entry.Files {
+		if !wantNames[f.FileName] {
+			t.Errorf("意外的相对路径: %q", f.FileName)
+		}
+	}
+
+	st, err := store.New(filepath.Join(t.TempDir(), "history.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{RootDir: root, Services: []config.ServiceEntry{{Name: "Svc"}}}
+	h := New(cfg, st, middleware.NewAuth("admin", "hash", "", ""), nil, nil)
+	// filesOnly=true 避免测试环境启停 Windows 服务
+	res := h.deployMulti("Svc", filepath.Join("app", "target"), entry, true)
+	if res.FinalState != "success" {
+		t.Fatalf("部署失败: %+v", res.Steps)
+	}
+
+	checks := []struct{ rel, want string }{
+		{"app/target/app.dll", "top"},
+		{"app/target/plugins/p.dll", "plugin"},
+		{"app/target/plugins/deep/d.json", "{}"},
+		{"app/target/plugins/inner/x.txt", "x"},
+	}
+	for _, c := range checks {
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(c.rel)))
+		if err != nil {
+			t.Errorf("缺少 %s: %v", c.rel, err)
+			continue
+		}
+		if string(data) != c.want {
+			t.Errorf("%s = %q, want %q", c.rel, data, c.want)
+		}
+	}
+
+	names := make([]string, 0, len(entry.Files))
+	for _, f := range entry.Files {
+		names = append(names, f.FileName)
+	}
+	deleteSourceFiles(src, names)
+	for _, name := range names {
+		p := filepath.Join(src, filepath.FromSlash(name))
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("源文件未删除: %s, err=%v", p, err)
+		}
+	}
+}
+
+func TestUploadPaths(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "history.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{RootDir: t.TempDir(), Services: []config.ServiceEntry{{Name: "Svc"}}}
+	h := New(cfg, st, middleware.NewAuth("admin", "hash", "", ""), nil, nil)
+
+	newReq := func(paths string) *http.Request {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		if paths != "" {
+			if err := mw.WriteField("paths", paths); err != nil {
+				t.Fatal(err)
+			}
+		}
+		part, err := mw.CreateFormFile("files", "a.dll")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write([]byte("data")); err != nil {
+			t.Fatal(err)
+		}
+		if err := mw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/upload", &buf)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		return req
+	}
+
+	rec := httptest.NewRecorder()
+	h.upload(rec, newReq(`["sub/a.dll"]`))
+	var out struct {
+		UploadID string `json:"upload_id"`
+		Error    string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if out.Error != "" || out.UploadID == "" {
+		t.Fatalf("上传失败: %s", rec.Body.String())
+	}
+	h.mu.Lock()
+	entry := h.uploads[out.UploadID]
+	h.mu.Unlock()
+	if len(entry.Files) != 1 || entry.Files[0].FileName != "sub/a.dll" {
+		t.Errorf("相对路径未生效: %+v", entry.Files)
+	}
+
+	rec2 := httptest.NewRecorder()
+	h.upload(rec2, newReq(`["../evil.dll"]`))
+	var out2 struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &out2); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if out2.Error == "" {
+		t.Error("非法相对路径应被拒绝")
+	}
+
+	// 不带 paths 的旧调用仍使用原始文件名
+	rec3 := httptest.NewRecorder()
+	h.upload(rec3, newReq(""))
+	var out3 struct {
+		UploadID string `json:"upload_id"`
+	}
+	if err := json.Unmarshal(rec3.Body.Bytes(), &out3); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	h.mu.Lock()
+	entry3 := h.uploads[out3.UploadID]
+	h.mu.Unlock()
+	if len(entry3.Files) != 1 || entry3.Files[0].FileName != "a.dll" {
+		t.Errorf("旧调用应保持纯文件名: %+v", entry3.Files)
 	}
 }

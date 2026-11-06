@@ -59,7 +59,7 @@ func TestStoreReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := s1.Save("svc", []Target{{Path: "x", SourceDir: `C:\build\release`}}); err != nil {
+	if err := s1.Save("svc", []Target{{Path: "x", SourceDir: `C:\build\release`, DeleteSource: true}}); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	s2, err := New(path)
@@ -72,6 +72,27 @@ func TestStoreReload(t *testing.T) {
 	}
 	if len(got) == 1 && got[0].SourceDir != `C:\build\release` {
 		t.Errorf("source_dir 未持久化: %+v", got[0])
+	}
+	if len(got) == 1 && !got[0].DeleteSource {
+		t.Errorf("delete_source 未持久化: %+v", got[0])
+	}
+}
+
+// 旧配置文件没有 delete_source 字段时，应按 false 兼容。
+func TestStoreOldJSONWithoutDeleteSource(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "targets.json")
+	old := `{"svc":[{"path":"bin","desc":"","source_dir":"C:\\build"}]}`
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err := New(path)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got := s.Get("svc")
+	if len(got) != 1 || got[0].DeleteSource {
+		t.Errorf("旧配置应默认不删除源文件: %+v", got)
 	}
 }
 

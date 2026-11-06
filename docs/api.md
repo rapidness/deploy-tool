@@ -161,6 +161,7 @@ done
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | files | file[] | 是 | 一个或多个文件（也支持单字段 file） |
+| paths | string | 否 | 与 `files` 一一对应的相对路径 JSON 数组，如 `["sub/a.dll"]`；多节点分发时用于保留子目录结构，不带时按上传文件名部署 |
 
 **响应** (200):
 
@@ -230,7 +231,29 @@ done
 
 **GET /api/history**
 
-返回最近 50 条操作历史。
+不带分页参数时保持旧行为：返回最近 50 条操作历史的数组。
+
+传 `page` 参数时返回分页对象，可翻阅**全部**历史（按时间倒序，不再受 50 条限制）：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `page` | 1 | 页码，从 1 开始 |
+| `page_size` | 10 | 每页条数，最大 100 |
+
+**分页响应** (200):
+
+```json
+{
+  "items": [
+    {"id": 12, "time": "2026-11-06T14:00:00+08:00", "operator": "admin", "service": "MyAppService", "node": "node-1", "file_name": "update.zip", "final_state": "success"}
+  ],
+  "total": 47,
+  "page": 1,
+  "page_size": 10
+}
+```
+
+`total` 为全部历史条数；页码越界时 `items` 为空数组。
 
 ### 3.8 目标路径
 
@@ -238,7 +261,27 @@ done
 
 **POST /api/targets**
 
-管理目标路径配置。每个条目可包含 `source_dir`（服务器本机更新文件目录），随目标配置一起保存。
+管理目标路径配置。每个条目字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `path` | string | 相对 `root_dir` 的部署目录 |
+| `desc` | string | 可选描述 |
+| `source_dir` | string | 服务器本机更新文件目录 |
+| `delete_source` | bool | “是否删除原文件”勾选状态，随配置一起持久化；执行时以页面当前勾选为准 |
+
+**POST 请求示例**:
+
+```json
+{
+  "service": "MyAppService",
+  "targets": [
+    {"path": "app/target", "desc": "", "source_dir": "C:\\build\\release", "delete_source": true}
+  ]
+}
+```
+
+旧配置文件缺少 `delete_source` 字段时按 `false` 处理。
 
 ### 3.9 节点列表
 
@@ -274,10 +317,12 @@ done
 }
 ```
 
-- `upload_id` 与 `source_dir` 二选一：前者使用上传缓存，后者读取服务器本机目录的顶层文件（zip 解压、普通文件覆盖）。
+- `upload_id` 与 `source_dir` 二选一：前者使用上传缓存，后者**递归**读取服务器本机目录及子目录中的普通文件，按相对路径覆盖到 `target_dir`（如 `plugins/a.dll` → `app/target/plugins/a.dll`）。
+- 目录中的 zip 在其所在的相对目录下解压并保留包内结构；顶层 zip 仍解压到 `target_dir`。空目录、符号链接与非普通文件不处理，文件总大小上限 500MB。
+- `files_only=true` 时仅替换文件、跳过停服与启服（左侧目录模式与右侧上传模式行为一致）；默认 `false` 为完整更新。
 - `nodes` 为空表示全部节点；执行顺序始终按 `cluster.nodes` 配置顺序。
 - 同一时刻只有一个节点停机；单个节点失败不会中止后续节点。
-- `delete_source=true` 时，全部节点更新成功后删除 `source_dir` 中本次读取的文件；失败或部分失败则保留，便于重试。
+- `delete_source=true` 时，全部节点更新成功后按相对路径删除 `source_dir` 中本次读取的文件（保留目录结构）；失败或部分失败则保留，便于重试。
 
 **响应** (200):
 

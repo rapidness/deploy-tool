@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -543,7 +544,26 @@ func fileNamesOf(entry uploadEntry) string {
 	return strings.Join(names, ", ")
 }
 
-// readDirUpload 读取服务器本机目录下的顶层文件，按上传文件的规则构造部署内容。
+// safeRelativePath 校验并规范化相对路径，拒绝绝对路径、盘符与 .. 越界。
+func safeRelativePath(rel string) (string, error) {
+	if rel == "" {
+		return "", fmt.Errorf("空的相对路径")
+	}
+	slashed := strings.ReplaceAll(rel, `\`, "/")
+	if strings.HasPrefix(slashed, "/") {
+		return "", fmt.Errorf("非法相对路径: %s", rel)
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(slashed))
+	if filepath.IsAbs(cleaned) || cleaned == "." || cleaned == ".." ||
+		strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) ||
+		strings.Contains(cleaned, ":") {
+		return "", fmt.Errorf("非法相对路径: %s", rel)
+	}
+	return filepath.ToSlash(cleaned), nil
+}
+
+// readDirUpload 递归读取服务器本机目录下的普通文件，按相对路径构造部署内容。
+// FileName 使用 / 分隔的相对路径（如 "sub/app.dll"），部署时保留目录结构。
 func readDirUpload(dir string) (uploadEntry, error) {
 	const maxTotal = int64(500 << 20)
 	clean := filepath.Clean(dir)
@@ -557,46 +577,63 @@ func readDirUpload(dir string) (uploadEntry, error) {
 	if !info.IsDir() {
 		return uploadEntry{}, fmt.Errorf("不是目录: %s", clean)
 	}
-	entries, err := os.ReadDir(clean)
-	if err != nil {
-		return uploadEntry{}, fmt.Errorf("读取目录失败: %w", err)
-	}
 	var files []uploadedFile
 	var total int64
-	for _, e := range entries {
-		fi, err := e.Info()
-		if err != nil || !fi.Mode().IsRegular() {
-			continue
+	err = filepath.WalkDir(clean, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("遍历目录失败(%s): %w", p, walkErr)
+		}
+		if d.IsDir() {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("读取文件信息失败(%s): %w", p, err)
+		}
+		// 跳过符号链接、设备等非普通文件（WalkDir 本身不跟随目录符号链接）
+		if !fi.Mode().IsRegular() {
+			return nil
 		}
 		if total+fi.Size() > maxTotal {
-			return uploadEntry{}, fmt.Errorf("目录内文件总大小超过 500MB")
+			return fmt.Errorf("目录内文件总大小超过 500MB")
 		}
-		data, err := os.ReadFile(filepath.Join(clean, e.Name()))
+		data, err := os.ReadFile(p)
 		if err != nil {
-			return uploadEntry{}, fmt.Errorf("读取文件失败(%s): %w", e.Name(), err)
+			return fmt.Errorf("读取文件失败(%s): %w", p, err)
 		}
-		isZip := strings.HasSuffix(strings.ToLower(e.Name()), ".zip")
+		rel, err := filepath.Rel(clean, p)
+		if err != nil {
+			return fmt.Errorf("计算相对路径失败(%s): %w", p, err)
+		}
+		rel = filepath.ToSlash(rel)
+		isZip := strings.HasSuffix(strings.ToLower(rel), ".zip")
 		if isZip {
 			if _, err := service.VerifyZip(data); err != nil {
-				return uploadEntry{}, fmt.Errorf("zip 校验失败(%s): %w", e.Name(), err)
+				return fmt.Errorf("zip 校验失败(%s): %w", rel, err)
 			}
 		}
 		total += int64(len(data))
-		files = append(files, uploadedFile{FileName: e.Name(), Data: data, IsZip: isZip})
+		files = append(files, uploadedFile{FileName: rel, Data: data, IsZip: isZip})
+		return nil
+	})
+	if err != nil {
+		return uploadEntry{}, err
 	}
 	if len(files) == 0 {
-		return uploadEntry{}, fmt.Errorf("目录中没有文件: %s", clean)
+		return uploadEntry{}, fmt.Errorf("目录及其子目录中没有可部署的普通文件: %s", clean)
 	}
 	return uploadEntry{Files: files, UploadTime: time.Now()}, nil
 }
 
-// deleteSourceFiles 更新成功后删除源目录中本次读取的文件。
+// deleteSourceFiles 更新成功后删除源目录中本次读取的文件（按相对路径，保留目录结构）。
 func deleteSourceFiles(dir string, names []string) {
 	for _, name := range names {
-		if !validLogName(name) {
+		rel, err := safeRelativePath(name)
+		if err != nil {
+			log.Printf("跳过删除源文件(%s): %v", name, err)
 			continue
 		}
-		p := filepath.Join(dir, name)
+		p := filepath.Join(dir, rel)
 		if err := os.Remove(p); err != nil {
 			log.Printf("删除源目录文件失败(%s): %v", p, err)
 		}
@@ -605,15 +642,15 @@ func deleteSourceFiles(dir string, names []string) {
 
 // uploadResp 上传接口响应。
 type uploadResp struct {
-	UploadID string         `json:"upload_id"`
-	Files    []uploadFile   `json:"files"`
+	UploadID string       `json:"upload_id"`
+	Files    []uploadFile `json:"files"`
 }
 
 // uploadFile 单个文件信息。
 type uploadFile struct {
-	Name   string `json:"name"`
-	Size   int64  `json:"size"`
-	IsZip  bool   `json:"is_zip"`
+	Name  string `json:"name"`
+	Size  int64  `json:"size"`
+	IsZip bool   `json:"is_zip"`
 }
 
 // upload 接收多文件上传，校验后保存到内存，返回 uploadID。
@@ -641,9 +678,27 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// paths 为多节点分发时携带的相对路径数组（与 files 一一对应）。
+	// 旧版本节点/脚本不带该字段，退化为使用原始文件名，保持兼容。
+	var relPaths []string
+	if p := r.FormValue("paths"); p != "" {
+		if err := json.Unmarshal([]byte(p), &relPaths); err != nil {
+			writeJSON(w, map[string]any{"error": "解析 paths 失败: " + err.Error()})
+			return
+		}
+	}
 	var uploaded []uploadedFile
 	var fileInfos []uploadFile
-	for _, header := range files {
+	for i, header := range files {
+		name := header.Filename
+		if i < len(relPaths) && relPaths[i] != "" {
+			safe, err := safeRelativePath(relPaths[i])
+			if err != nil {
+				writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			name = safe
+		}
 		f, err := header.Open()
 		if err != nil {
 			writeJSON(w, map[string]any{"error": "打开文件失败: " + header.Filename})
@@ -655,15 +710,15 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"error": "读取文件失败: " + header.Filename})
 			return
 		}
-		isZip := strings.HasSuffix(strings.ToLower(header.Filename), ".zip")
+		isZip := strings.HasSuffix(strings.ToLower(name), ".zip")
 		if isZip {
 			if _, err := service.VerifyZip(data); err != nil {
-				writeJSON(w, map[string]any{"error": "zip 校验失败(" + header.Filename + "): " + err.Error()})
+				writeJSON(w, map[string]any{"error": "zip 校验失败(" + name + "): " + err.Error()})
 				return
 			}
 		}
-		uploaded = append(uploaded, uploadedFile{FileName: header.Filename, Data: data, IsZip: isZip})
-		fileInfos = append(fileInfos, uploadFile{Name: header.Filename, Size: int64(len(data)), IsZip: isZip})
+		uploaded = append(uploaded, uploadedFile{FileName: name, Data: data, IsZip: isZip})
+		fileInfos = append(fileInfos, uploadFile{Name: name, Size: int64(len(data)), IsZip: isZip})
 	}
 
 	uploadID := generateUploadID()
@@ -747,14 +802,17 @@ func (h *Handler) deployMulti(serviceName, targetDir string, entry uploadEntry, 
 	steps = append(steps, service.Step("deploy", func() (string, error) {
 		totalWritten := 0
 		for _, f := range entry.Files {
+			relName := filepath.FromSlash(f.FileName)
 			if f.IsZip {
-				written, err := service.ExtractZipToDir(f.Data, h.cfg.RootDir, targetDir)
+				// zip 在其所在的相对目录下解压并保留包内结构；顶层 zip 仍解压到 targetDir
+				zipDir := filepath.Join(targetDir, filepath.Dir(relName))
+				written, err := service.ExtractZipToDir(f.Data, h.cfg.RootDir, zipDir)
 				if err != nil {
 					return "", fmt.Errorf("解压 %s 失败: %w", f.FileName, err)
 				}
 				totalWritten += len(written)
 			} else {
-				written, err := service.DeployFiles([]service.FileItem{{FileName: f.FileName, Data: f.Data}}, h.cfg.RootDir, targetDir)
+				written, err := service.DeployFiles([]service.FileItem{{FileName: relName, Data: f.Data}}, h.cfg.RootDir, targetDir)
 				if err != nil {
 					return "", fmt.Errorf("部署 %s 失败: %w", f.FileName, err)
 				}
@@ -797,7 +855,7 @@ func (h *Handler) handleTargets(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, h.targets.Get(service))
 	case http.MethodPost:
 		var req struct {
-			Service string          `json:"service"`
+			Service string           `json:"service"`
 			Targets []targets.Target `json:"targets"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -818,9 +876,29 @@ func (h *Handler) handleTargets(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// history 返回操作历史。
+// 不带 page 参数时保持旧行为：返回最近 50 条数组；带 page 时返回分页对象。
 func (h *Handler) history(w http.ResponseWriter, r *http.Request) {
-	list := h.store.List(50)
-	writeJSON(w, list)
+	q := r.URL.Query()
+	if q.Get("page") == "" {
+		writeJSON(w, h.store.List(50))
+		return
+	}
+	page, _ := strconv.Atoi(q.Get("page"))
+	pageSize, _ := strconv.Atoi(q.Get("page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if page > 100000 {
+		page = 100000
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	writeJSON(w, h.store.ListPage(page, pageSize))
 }
 
 func (h *Handler) control(w http.ResponseWriter, r *http.Request) {
@@ -861,11 +939,11 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // logEntry 日志文件信息。
 type logEntry struct {
-	Name       string `json:"name"`        // 文件名
-	Size       int64  `json:"size"`        // 字节数
-	ModTime    string `json:"mod_time"`    // 最后更新时间 RFC3339
-	ModTimeMs  int64  `json:"mod_time_ms"` // 最后更新时间毫秒时间戳
-	IsDir      bool   `json:"is_dir"`
+	Name      string `json:"name"`        // 文件名
+	Size      int64  `json:"size"`        // 字节数
+	ModTime   string `json:"mod_time"`    // 最后更新时间 RFC3339
+	ModTimeMs int64  `json:"mod_time_ms"` // 最后更新时间毫秒时间戳
+	IsDir     bool   `json:"is_dir"`
 }
 
 // remoteClient 返回指定节点的远端客户端；节点为空或为本机时返回 remote=false。

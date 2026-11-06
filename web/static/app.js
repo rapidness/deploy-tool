@@ -2,7 +2,7 @@
 
 var BASE = window.__BP__ || '';
 var currentService = '';
-var currentTargets = []; // [{path, desc}]
+var currentTargets = []; // [{path, desc, source_dir, delete_source}]
 var targetUploads = {};  // path -> {uploadID, files}
 
 // 退出登录
@@ -113,8 +113,9 @@ function renderTargets() {
       + '<input type="text" class="target-desc-input" data-index="' + i + '" value="' + escapeAttr(desc) + '" placeholder="描述（可选）">'
       + '<div class="dir-deploy">'
       + '<input type="text" class="target-dir-input" data-index="' + i + '" value="' + escapeAttr(t.source_dir || '') + '" placeholder="服务器目录（绝对路径），读取目录内文件部署">'
-      + '<button type="button" class="btn-sm" data-index="' + i + '" onclick="deployFromDir(' + i + ')">执行更新</button>'
-      + '<label class="dir-delete-label"><input type="checkbox" class="delete-source-input" data-index="' + i + '">是否删除原文件</label>'
+      + '<button type="button" class="btn-sm" data-index="' + i + '" onclick="deployFromDir(' + i + ', false)">执行更新</button>'
+      + '<button type="button" class="btn-sm" data-index="' + i + '" onclick="deployFromDir(' + i + ', true)">替换文件</button>'
+      + '<label class="dir-delete-label"><input type="checkbox" class="delete-source-input" data-index="' + i + '"' + (t.delete_source ? ' checked' : '') + '>是否删除原文件</label>'
       + '</div>'
       + '<button type="button" class="btn-sm btn-danger" data-index="' + i + '" onclick="removeTarget(' + i + ')">删除</button>'
       + '</div>'
@@ -132,6 +133,13 @@ function renderTargets() {
   });
   container.innerHTML = html;
   bindDropZones();
+  // 勾选状态实时同步到内存，避免新增/删除路径重绘时丢失（提交时仍以当前勾选为准）
+  container.querySelectorAll('.delete-source-input').forEach(function(box) {
+    box.addEventListener('change', function() {
+      var idx = parseInt(box.getAttribute('data-index'), 10);
+      if (currentTargets[idx]) currentTargets[idx].delete_source = box.checked;
+    });
+  });
 }
 
 function chooseFile(btn) {
@@ -153,7 +161,7 @@ function removeTarget(index) {
 }
 
 document.getElementById('btn-add-target').addEventListener('click', function() {
-  currentTargets.push({ path: '', desc: '', source_dir: '' });
+  currentTargets.push({ path: '', desc: '', source_dir: '', delete_source: false });
   renderTargets();
 });
 
@@ -162,12 +170,14 @@ document.getElementById('btn-save-targets').addEventListener('click', function()
   var pathInputs = document.querySelectorAll('.target-path-input');
   var descInputs = document.querySelectorAll('.target-desc-input');
   var dirInputs = document.querySelectorAll('.target-dir-input');
+  var deleteInputs = document.querySelectorAll('.delete-source-input');
   var targets = [];
   pathInputs.forEach(function(inp, i) {
     var path = inp.value.trim();
     var desc = descInputs[i] ? descInputs[i].value.trim() : '';
     var sourceDir = dirInputs[i] ? dirInputs[i].value.trim() : '';
-    if (path) { targets.push({ path: path, desc: desc, source_dir: sourceDir }); }
+    var deleteSource = deleteInputs[i] ? deleteInputs[i].checked : false;
+    if (path) { targets.push({ path: path, desc: desc, source_dir: sourceDir, delete_source: deleteSource }); }
   });
   fetch(BASE + '/api/targets', {
     method: 'POST',
@@ -274,7 +284,8 @@ function deployTarget(path, filesOnly) {
 }
 
 // 从服务器本机目录读取文件并执行更新（无需上传）
-function deployFromDir(index) {
+// filesOnly=true 时仅替换文件、不启停服务，与右侧上传模式的「替换文件」一致
+function deployFromDir(index, filesOnly) {
   if (!currentService) { alert('请选择服务'); return; }
   var pathInput = document.querySelector('.target-path-input[data-index="' + index + '"]');
   var dirInput = document.querySelector('.target-dir-input[data-index="' + index + '"]');
@@ -288,7 +299,7 @@ function deployFromDir(index) {
   if (nodes.length > 0 && chosen.length === 0) { alert('请至少选择一个节点'); return; }
 
   var infoDiv = document.querySelector('.dir-deploy-info[data-index="' + index + '"]');
-  if (infoDiv) infoDiv.innerHTML = '<p class="muted">正在提交更新...</p>';
+  if (infoDiv) infoDiv.innerHTML = '<p class="muted">正在提交' + (filesOnly ? '替换' : '更新') + '...</p>';
 
   fetch(BASE + '/api/cluster/deploy', {
     method: 'POST',
@@ -297,6 +308,7 @@ function deployFromDir(index) {
       source_dir: dir,
       service: currentService,
       target_dir: path,
+      files_only: !!filesOnly,
       delete_source: deleteSource,
       nodes: chosen
     })
@@ -396,29 +408,61 @@ function selectedNodes() {
   return names;
 }
 
-// 加载操作历史
-function loadHistory() {
-  fetch(BASE + '/api/history')
+// === 操作历史（后端分页）===
+
+var HISTORY_PAGE_SIZE = 10;
+var historyPage = 1;
+var historyPageCount = 1;
+var historyTotal = 0;
+
+// 不传 page 表示刷新并回到第 1 页（部署完成后会有新记录），传 page 表示翻页
+function loadHistory(page) {
+  historyPage = (typeof page === 'number' && page > 0) ? page : 1;
+  fetch(BASE + '/api/history?page=' + historyPage + '&page_size=' + HISTORY_PAGE_SIZE)
     .then(function(r) { return r.json(); })
-    .then(function(list) {
-      if (!list || list.length === 0) {
-        document.getElementById('history').innerHTML = '<p class="muted">暂无历史记录</p>';
+    .then(function(res) {
+      var list = (res && res.items) || [];
+      historyTotal = (res && res.total) || 0;
+      var size = (res && res.page_size) || HISTORY_PAGE_SIZE;
+      historyPageCount = Math.max(1, Math.ceil(historyTotal / size));
+      // 当前页超出范围（如历史被清理）时回到最后一页重查
+      if (historyPage > historyPageCount) {
+        loadHistory(historyPageCount);
         return;
       }
-      var html = '<table><thead><tr><th>时间</th><th>操作人</th><th>服务</th><th>节点</th><th>文件</th><th>结果</th></tr></thead><tbody>';
-      list.forEach(function(h) {
-        var t = h.time || h.Time || '';
-        t = t ? new Date(t).toLocaleString('zh-CN') : '';
-        var state = h.final_state || h.FinalState || '';
-        var cls = state === 'success' ? 'step-success' : 'step-failed';
-        html += '<tr><td>' + t + '</td><td>' + escapeHtml(h.operator || h.Operator || '') + '</td><td>' + escapeHtml(h.service || h.Service || '') + '</td><td>' + escapeHtml(h.node || h.Node || '') + '</td><td>' + escapeHtml(h.file_name || h.FileName || '') + '</td><td class="' + cls + '">' + state + '</td></tr>';
-      });
-      html += '</tbody></table>';
-      document.getElementById('history').innerHTML = html;
+      renderHistory(list);
+      renderHistoryPager();
     })
     .catch(function(err) {
       document.getElementById('history').innerHTML = '<p class="error">加载失败: ' + err.message + '</p>';
+      document.getElementById('history-pager').innerHTML = '';
     });
+}
+
+function renderHistory(list) {
+  var el = document.getElementById('history');
+  if (!list || list.length === 0) {
+    el.innerHTML = '<p class="muted">暂无历史记录</p>';
+    return;
+  }
+  var html = '<table><thead><tr><th>时间</th><th>操作人</th><th>服务</th><th>节点</th><th>文件</th><th>结果</th></tr></thead><tbody>';
+  list.forEach(function(h) {
+    var t = h.time || h.Time || '';
+    t = t ? new Date(t).toLocaleString('zh-CN') : '';
+    var state = h.final_state || h.FinalState || '';
+    var cls = state === 'success' ? 'step-success' : 'step-failed';
+    html += '<tr><td>' + t + '</td><td>' + escapeHtml(h.operator || h.Operator || '') + '</td><td>' + escapeHtml(h.service || h.Service || '') + '</td><td>' + escapeHtml(h.node || h.Node || '') + '</td><td>' + escapeHtml(h.file_name || h.FileName || '') + '</td><td class="' + cls + '">' + escapeHtml(state) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function renderHistoryPager() {
+  var el = document.getElementById('history-pager');
+  if (historyTotal === 0) { el.innerHTML = ''; return; }
+  el.innerHTML = '<span class="pager-info">第 ' + historyPage + '/' + historyPageCount + ' 页 · 共 ' + historyTotal + ' 条</span>'
+    + '<button type="button" class="btn-sm" onclick="loadHistory(' + (historyPage - 1) + ')"' + (historyPage <= 1 ? ' disabled' : '') + '>上一页</button>'
+    + '<button type="button" class="btn-sm" onclick="loadHistory(' + (historyPage + 1) + ')"' + (historyPage >= historyPageCount ? ' disabled' : '') + '>下一页</button>';
 }
 
 // 工具函数

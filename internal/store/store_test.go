@@ -69,6 +69,44 @@ func TestStoreListOrderAndLimit(t *testing.T) {
 	}
 }
 
+func TestStoreListPage(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(filepath.Join(dir, "history.json"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		h := History{Operator: "u", Service: "s", Time: time.Now().Add(time.Duration(i) * time.Second)}
+		if _, err := s.Add(h); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+
+	p1 := s.ListPage(1, 10)
+	if p1.Total != 12 || p1.Page != 1 || p1.PageSize != 10 || len(p1.Items) != 10 {
+		t.Fatalf("page1 不正确: total=%d page=%d size=%d items=%d", p1.Total, p1.Page, p1.PageSize, len(p1.Items))
+	}
+	if p1.Items[0].ID != 12 {
+		t.Errorf("page1 应按时间倒序，首条 ID 应为 12，实际 %d", p1.Items[0].ID)
+	}
+	p2 := s.ListPage(2, 10)
+	if p2.Total != 12 || len(p2.Items) != 2 || p2.Items[0].ID != 2 {
+		t.Errorf("page2 不正确: %+v", p2)
+	}
+	p3 := s.ListPage(3, 10)
+	if p3.Total != 12 || len(p3.Items) != 0 {
+		t.Errorf("越界页应为空: %+v", p3)
+	}
+	def := s.ListPage(0, 0)
+	if def.Page != 1 || def.PageSize != 10 || len(def.Items) != 10 {
+		t.Errorf("非法参数应归一为 page=1,size=10: %+v", def)
+	}
+	huge := s.ListPage(1<<60, 10)
+	if huge.Total != 12 || len(huge.Items) != 0 {
+		t.Errorf("极大页码应返回空页: %+v", huge)
+	}
+}
+
 func TestStoreReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "history.json")

@@ -41,7 +41,7 @@
         <button type="button" class="btn-sm" id="btn-add-target">添加路径</button>
         <button type="button" class="btn-sm" id="btn-save-targets">保存路径</button>
       </div>
-      <p class="muted">每个目标路径对应一个部署目录（相对根目录），左侧填写服务器目录可直接执行更新，右侧也可上传文件。非 zip 文件直接覆盖到该目录；zip 文件解压到该目录。勾选“是否删除原文件”后，全部节点更新成功会删除服务器目录中本次使用的文件。</p>
+      <p class="muted">每个目标路径对应一个部署目录（相对根目录），左侧填写服务器目录可直接执行更新，或点“替换文件”仅覆盖文件不启停服务；右侧也可上传文件。左侧会递归读取目录及子目录中的普通文件，按原有相对路径覆盖到目标路径；子目录中的 zip 在其所在目录下解压并保留包内结构，空目录不创建。勾选“是否删除原文件”后，全部节点执行成功会删除本次读取的源文件（保留目录结构），勾选状态随“保存路径”一起保存。</p>
       <div id="targets-list"></div>
       <div id="targets-status"></div>
     </div>
@@ -50,6 +50,7 @@
   <section class="card">
     <h2>操作历史</h2>
     <div id="history"><p class="muted">加载中...</p></div>
+    <div id="history-pager" class="pager"></div>
   </section>
 </div>
 <script>window.__BP__ = "__BASE_PATH__";</script>

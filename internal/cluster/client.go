@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -45,8 +46,22 @@ func (c *Client) Upload(files []File) (string, error) {
 	}
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
+	// paths 与 files 一一对应，携带相对路径以在远端保留子目录结构。
+	// 旧版本节点忽略该字段，仍按纯文件名覆盖（兼容滚动升级）。
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = filepath.ToSlash(f.Name)
+	}
+	pathsJSON, err := json.Marshal(paths)
+	if err != nil {
+		return "", fmt.Errorf("编码文件路径失败: %w", err)
+	}
+	if err := mw.WriteField("paths", string(pathsJSON)); err != nil {
+		return "", fmt.Errorf("写入 paths 字段失败: %w", err)
+	}
 	for _, f := range files {
-		part, err := mw.CreateFormFile("files", f.Name)
+		// multipart 的 filename 在服务端会被取 Base，因此这里只放纯文件名
+		part, err := mw.CreateFormFile("files", filepath.Base(filepath.FromSlash(f.Name)))
 		if err != nil {
 			return "", fmt.Errorf("构造上传请求失败: %w", err)
 		}

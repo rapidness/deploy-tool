@@ -13,10 +13,10 @@ import (
 
 // StepResult 单个步骤执行结果。
 type StepResult struct {
-	Name     string `json:"name"`      // 步骤名称
-	Status   string `json:"status"`    // success / failed / skipped
-	Message  string `json:"message"`   // 结果描述
-	Duration int64  `json:"duration"`  // 耗时(毫秒)
+	Name     string `json:"name"`     // 步骤名称
+	Status   string `json:"status"`   // success / failed / skipped
+	Message  string `json:"message"`  // 结果描述
+	Duration int64  `json:"duration"` // 耗时(毫秒)
 }
 
 // History 单次更新操作的历史记录。
@@ -113,6 +113,42 @@ func (s *Store) List(limit int) []History {
 		result = result[:limit]
 	}
 	return result
+}
+
+// PageResult 历史记录分页查询结果。
+type PageResult struct {
+	Items    []History `json:"items"`
+	Total    int       `json:"total"`
+	Page     int       `json:"page"`
+	PageSize int       `json:"page_size"`
+}
+
+// ListPage 返回指定页的历史记录（按时间倒序）与总条数。
+// page 从 1 开始，pageSize 默认 10；越界页返回空 items，total 始终为全部记录数。
+func (s *Store) ListPage(page, pageSize int) PageResult {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	all := s.List(0)
+	total := len(all)
+	start := (page - 1) * pageSize
+	// 防止极大 page 造成整数溢出或越界
+	if start < 0 || start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end < start || end > total {
+		end = total
+	}
+	return PageResult{
+		Items:    all[start:end],
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	}
 }
 
 // Get 按 ID 查询历史详情。

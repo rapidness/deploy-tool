@@ -109,3 +109,30 @@ func TestGet(t *testing.T) {
 		t.Errorf("查询参数 = %q", gotQuery)
 	}
 }
+
+func TestUploadSendsRelativePaths(t *testing.T) {
+	var gotPaths, gotFilename string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("解析上传请求失败: %v", err)
+		}
+		gotPaths = r.FormValue("paths")
+		files := r.MultipartForm.File["files"]
+		if len(files) == 1 {
+			gotFilename = files[0].Filename
+		}
+		json.NewEncoder(w).Encode(map[string]any{"upload_id": "u1"})
+	}))
+	defer srv.Close()
+
+	c := NewClient(config.ClusterNode{Name: "n1", URL: srv.URL, APIToken: "tok"})
+	if _, err := c.Upload([]File{{Name: "plugins/a.dll", Data: []byte("x")}}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if gotPaths != `["plugins/a.dll"]` {
+		t.Errorf("paths = %q, want [\"plugins/a.dll\"]", gotPaths)
+	}
+	if gotFilename != "a.dll" {
+		t.Errorf("filename = %q, want a.dll", gotFilename)
+	}
+}
