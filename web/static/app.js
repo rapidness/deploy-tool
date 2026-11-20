@@ -4,6 +4,7 @@ var BASE = window.__BP__ || '';
 var currentService = '';
 var currentTargets = []; // [{path, desc, source_dir, delete_source}]
 var targetUploads = {};  // path -> {uploadID, files}
+var autoActions = {};    // path -> 'update' | 'replace' | undefined（上传完成后自动执行）
 
 // 退出登录
 document.getElementById('btn-logout').addEventListener('click', function() {
@@ -73,6 +74,7 @@ function controlService(name, action) {
 document.getElementById('service-select').addEventListener('change', function() {
   currentService = this.value;
   targetUploads = {};
+  autoActions = {};
   if (currentService) {
     document.getElementById('targets-section').style.display = '';
     loadTargets();
@@ -126,6 +128,10 @@ function renderTargets() {
       + '<button type="button" class="btn-sm" onclick="chooseFile(this)">选择文件</button>'
       + '<p class="muted">支持多文件</p>'
       + '</div>'
+      + '<div class="auto-deploy">'
+      + '<label class="auto-deploy-label"><input type="checkbox" class="auto-update-input" data-path="' + escapeAttr(path) + '"' + (autoActions[path] === 'update' ? ' checked' : '') + '>上传后执行更新</label>'
+      + '<label class="auto-deploy-label"><input type="checkbox" class="auto-replace-input" data-path="' + escapeAttr(path) + '"' + (autoActions[path] === 'replace' ? ' checked' : '') + '>上传后替换文件</label>'
+      + '</div>'
       + '<div class="upload-info" data-path="' + escapeAttr(path) + '">' + uploadHtml + '</div>'
       + '<div class="dir-deploy-info" data-index="' + i + '"></div>'
       + '</div>'
@@ -138,6 +144,21 @@ function renderTargets() {
     box.addEventListener('change', function() {
       var idx = parseInt(box.getAttribute('data-index'), 10);
       if (currentTargets[idx]) currentTargets[idx].delete_source = box.checked;
+    });
+  });
+  // 上传后自动执行的两个复选框互斥；状态按路径保存，重绘时不丢失
+  container.querySelectorAll('.auto-update-input, .auto-replace-input').forEach(function(box) {
+    box.addEventListener('change', function() {
+      var boxPath = box.getAttribute('data-path');
+      var group = box.closest('.auto-deploy');
+      var isUpdate = box.classList.contains('auto-update-input');
+      var other = group.querySelector(isUpdate ? '.auto-replace-input' : '.auto-update-input');
+      if (box.checked) {
+        other.checked = false;
+        autoActions[boxPath] = isUpdate ? 'update' : 'replace';
+      } else {
+        delete autoActions[boxPath];
+      }
     });
   });
 }
@@ -156,7 +177,10 @@ function chooseFile(btn) {
 function removeTarget(index) {
   var path = currentTargets[index] ? currentTargets[index].path : '';
   currentTargets.splice(index, 1);
-  if (path) delete targetUploads[path];
+  if (path) {
+    delete targetUploads[path];
+    delete autoActions[path];
+  }
   renderTargets();
 }
 
@@ -243,6 +267,8 @@ function uploadFiles(zone, files) {
       if (infoDiv) infoDiv.innerHTML = '<p class="step-success">已上传: ' + escapeHtml((res.files || []).map(function(f){return f.name;}).join(', ')) + '</p>'
             + '<button type="button" class="btn-sm" onclick="deployTarget(\'' + escapeAttr(path) + '\', false)">执行更新</button>'
             + ' <button type="button" class="btn-sm" onclick="deployTarget(\'' + escapeAttr(path) + '\', true)">替换文件</button>';
+      var autoAction = autoActions[path];
+      if (autoAction) deployTarget(path, autoAction === 'replace');
     })
     .catch(function(err) {
       if (infoDiv) infoDiv.innerHTML = '<p class="error">上传失败: ' + err.message + '</p>';

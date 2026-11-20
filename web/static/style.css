@@ -38,6 +38,9 @@ code { background: #f3f4f6; padding: 0.1rem 0.3rem; border-radius: 3px; font-siz
 .btn-danger { background: #dc2626; }
 .btn-danger:hover { background: #b91c1c; }
 .upload-info { margin-top: 0.3rem; }
+.auto-deploy { display: flex; flex-wrap: wrap; gap: 0.2rem 1rem; }
+.auto-deploy-label { display: inline-flex; align-items: center; gap: 0.3rem; margin: 0; font-size: 0.8rem; white-space: nowrap; cursor: pointer; }
+.auto-deploy input[type=checkbox] { display: inline-block; width: auto; padding: 0; margin: 0; }
 .dir-deploy { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .dir-deploy .target-dir-input { flex: 1 1 100%; margin-top: 0; padding: 0.3rem; border: 1px solid #ddd; border-radius: 3px; font-size: 0.85rem; }
 .dir-deploy button { white-space: nowrap; }
